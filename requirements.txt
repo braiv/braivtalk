@@ -17,6 +17,9 @@ tqdm>=4.0.0
 gdown
 requests
 
+# LR-ASD Active Speaker Detection Dependencies
+python_speech_features>=0.6
+
 # GPEN-BFR Face Enhancement Dependencies (ONNX-based)
 onnx>=1.17.0
 onnxruntime; platform_system == "Darwin"

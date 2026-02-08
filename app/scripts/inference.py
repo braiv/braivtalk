@@ -92,11 +92,15 @@ def main(args):
     else:  # v1
         fp = FaceParsing()
 
+    # Active Speaker Detection is lazily initialized inside the task loop
+    # (because enable_asd may come from YAML, which is merged per-task).
+    asd_detector = None
+
     # Initialize GPEN-BFR face enhancer if enabled
     gpen_bfr_enhancer = None
     if args.enable_gpen_bfr and GPEN_BFR_AVAILABLE:
         try:
-            print("🎨 Initializing GPEN-BFR face enhancer...")
+            print("Initializing GPEN-BFR face enhancer...")
             gpen_bfr_enhancer = GPENBFREnhancer(
                 model_path=args.gpen_bfr_model_path,
                 device="auto",
@@ -129,7 +133,7 @@ def main(args):
             if "result_name" in task_config:
                 args.output_vid_name = task_config["result_name"]
 
-            # 🎯 MERGE YAML PARAMETERS WITH COMMAND LINE ARGUMENTS
+            # MERGE YAML PARAMETERS WITH COMMAND LINE ARGUMENTS
             mouth_params = [
                 'ellipse_padding_factor', 'upper_boundary_ratio', 'expand_factor',
                 'use_elliptical_mask', 'blur_kernel_ratio', 'mouth_vertical_offset',
@@ -144,7 +148,12 @@ def main(args):
                 'yolo_primary_face_confidence_drop',
             ]
 
-            for param in mouth_params + yolo_params:
+            # Active Speaker Detection parameters
+            asd_params = [
+                'enable_asd', 'asd_threshold', 'asd_model_path',
+            ]
+
+            for param in mouth_params + yolo_params + asd_params:
                 if param in task_config:
                     setattr(args, param, task_config[param])
                     print(f"Using YAML parameter: {param} = {task_config[param]}")
@@ -220,6 +229,35 @@ def main(args):
                 audio_padding_length_right=args.audio_padding_length_right,
             )
 
+            # --- ASD speaker selection (before face detection) ----
+            # When ASD is enabled, detect ALL faces and use ASD to pick the
+            # speaker BEFORE running the main face-detection pass.  This
+            # ensures YOLOv8 locks onto the correct face.
+            if args.enable_asd:
+                # Lazy-init: load model on first use (YAML params are merged by now)
+                if asd_detector is None:
+                    try:
+                        from braivtalk.models.lr_asd import ActiveSpeakerDetector
+                        asd_detector = ActiveSpeakerDetector(args.asd_model_path, device=str(device))
+                    except Exception as e:
+                        print(f"WARNING: ASD initialization failed: {e}")
+                        print("   Continuing without active speaker detection...")
+                if asd_detector is not None:
+                    from braivtalk.utils.preprocessing import fa as face_det
+                    # Set up ASD debug directory (reuses debug_mouth_mask flag)
+                    asd_debug_dir = None
+                    if args.debug_mouth_mask:
+                        asd_debug_base = os.path.join(os.getcwd(), "debug_asd")
+                        asd_debug_dir = os.path.join(asd_debug_base, f"{args.version}_{output_basename}")
+                    speaker_bbox = asd_detector.select_speaker_face(
+                        frame_list, audio_path, face_det, fps=fps,
+                        debug_dir=asd_debug_dir,
+                    )
+                    if speaker_bbox is not None and hasattr(face_det, "set_primary_face"):
+                        face_det.set_primary_face(speaker_bbox)
+                    elif speaker_bbox is None:
+                        print("[ASD] Could not determine speaker -- using default face selection")
+
             # Preprocess: detect faces (or load cached coordinates)
             if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
                 print("Using saved coordinates")
@@ -241,6 +279,15 @@ def main(args):
 
             print(f"Number of frames: {len(frame_list)}")
 
+            # Active Speaker Detection: mark non-speaking frames for passthrough
+            speaking_mask = [True] * len(frame_list)
+            if args.enable_asd and asd_detector is not None:
+                print("Running per-frame Active Speaker Detection...")
+                asd_scores, speaking_mask = asd_detector.detect_speaking_frames(
+                    frame_list, coord_list, audio_path, fps=fps,
+                    threshold=args.asd_threshold,
+                )
+
             # Process each frame - Enhanced version that handles ALL frames
             input_latent_list = []
             passthrough_frames = {}
@@ -251,6 +298,13 @@ def main(args):
                     input_latent_list.append(None)
                     passthrough_frames[i] = frame
                     print(f"Frame {i}: No face detected - will use passthrough")
+                elif not speaking_mask[i]:
+                    # ASD determined this frame is not speaking - passthrough.
+                    # Set coord to placeholder so datagen_enhanced also treats
+                    # it as passthrough (it decides based on coord, not latent).
+                    coord_list[i] = coord_placeholder
+                    input_latent_list.append(None)
+                    passthrough_frames[i] = frame
                 else:
                     processed_frame_count += 1
                     x1, y1, x2, y2 = bbox
@@ -262,9 +316,11 @@ def main(args):
                     latents = vae.get_latents_for_unet(crop_frame)
                     input_latent_list.append(latents)
 
+            asd_skipped = sum(1 for m in speaking_mask if not m)
             print(
                 f"Enhanced processing: {processed_frame_count} frames with faces, "
                 f"{len(passthrough_frames)} passthrough frames"
+                + (f" ({asd_skipped} skipped by ASD)" if asd_skipped > 0 else "")
             )
 
             # Smooth first and last frames
@@ -358,7 +414,7 @@ def main(args):
                                 debug_base_dir = os.path.join(os.getcwd(), "debug_mouth_masks")
                                 debug_output_dir = os.path.join(debug_base_dir, f"{args.version}_{output_basename}")
                                 os.makedirs(debug_output_dir, exist_ok=True)
-                                print(f"🔍 Debug outputs will be saved to: {debug_output_dir}")
+                                print(f"[DEBUG] Debug outputs will be saved to: {debug_output_dir}")
 
                             combine_frame = get_image(
                                 ori_frame,
@@ -531,6 +587,11 @@ if __name__ == "__main__":
     parser.add_argument("--mask_height_ratio", type=float, default=0.85, help="Height ratio for mask relative to mouth width")
     parser.add_argument("--mask_corner_radius", type=float, default=0.2, help="Corner radius for rounded shapes")
     parser.add_argument("--parsing_interval", type=int, default=1, help="Face parsing interval: run BiSeNet every N frames, reuse cached mask in between (1=every frame, 5=5x faster blending)")
+
+    # Active Speaker Detection (LR-ASD) Parameters
+    parser.add_argument("--enable_asd", action="store_true", help="Enable LR-ASD active speaker detection (skip lip-sync on non-speaking frames)")
+    parser.add_argument("--asd_model_path", type=str, default="models/lr_asd/pretrain_AVA.model", help="Path to LR-ASD pretrained model weights")
+    parser.add_argument("--asd_threshold", type=float, default=0.0, help="ASD speaking score threshold (>0 = speaking, raise to be stricter)")
 
     # GPEN-BFR Face Enhancement Parameters
     parser.add_argument("--enable_gpen_bfr", action="store_true", help="Enable GPEN-BFR face enhancement")

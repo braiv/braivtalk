@@ -114,7 +114,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
     mask_image = Image.new('L', ori_shape, 0)  # 创建一个全黑的掩码图像
     
     if landmarks is not None and len(landmarks) >= 5:
-        # 🎯 SURGICAL POSITIONING: Use YOLOv8 landmarks for precise mouth region
+        # SURGICAL POSITIONING: Use YOLOv8 landmarks for precise mouth region
         left_eye, right_eye, nose_tip, left_mouth, right_mouth = landmarks
         
         # Calculate mouth-specific region for surgical precision
@@ -150,12 +150,12 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         mouth_mask = Image.new('L', (face_width, face_height), 0)
         draw = ImageDraw.Draw(mouth_mask)
         
-        # 🎯 DYNAMIC MOUTH SIZING: Match AI mouth to original YOLOv8 detected mouth size
+        # DYNAMIC MOUTH SIZING: Match AI mouth to original YOLOv8 detected mouth size
         # Base mouth region on actual detected mouth width with scale factor
         base_mouth_width = mouth_width * mouth_scale_factor  # Apply user-defined scaling
         mouth_region_width = base_mouth_width * (1.0 + ellipse_padding_factor * 2)  # Add padding
         
-        # 🎭 ADVANCED MASK SHAPES: Calculate dimensions based on mask shape
+        # ADVANCED MASK SHAPES: Calculate dimensions based on mask shape
         if mask_shape == "ultra_wide_ellipse":
             # Ultra wide ellipse: MAXIMUM coverage for challenging cases
             mouth_region_width = mouth_region_width * 1.8  # 80% wider than standard
@@ -193,7 +193,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         mask_right = min(face_width, mask_right)
         mask_bottom = min(face_height, mask_bottom)
         
-        # 🎨 DRAW MASK BASED ON SHAPE
+        # DRAW MASK BASED ON SHAPE
         if mask_shape == "ellipse":
             # Standard ellipse
             draw.ellipse([mask_left, mask_top, mask_right, mask_bottom], fill=255)
@@ -270,7 +270,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
             mouth_mask.paste(temp_mask, (0, 0))
             
         elif mask_shape == "dynamic_contour":
-            # 🎯 DYNAMIC CONTOUR: Follow natural face geometry using landmarks
+            # DYNAMIC CONTOUR: Follow natural face geometry using landmarks
             # This creates a mask that follows the jawline and chin contours
             
             # Calculate face geometry from landmarks
@@ -328,7 +328,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
                 
                 # Add debug info for dynamic contour
                 if debug_mouth_mask:
-                    print(f"🎯 Dynamic contour: {len(contour_points)} points, jaw_width={jaw_width:.1f}px, chin_y={chin_y:.1f}px")
+                    print(f"Dynamic contour: {len(contour_points)} points, jaw_width={jaw_width:.1f}px, chin_y={chin_y:.1f}px")
         
         # Apply face parsing mask for additional refinement
         mouth_array = np.array(mouth_mask)
@@ -356,13 +356,13 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
                     cropped_mask = final_face_mask.crop((0, 0, crop_w, crop_h))
                     mask_image.paste(cropped_mask, (paste_x, paste_y))
         else:
-            print(f"⚠️ Warning: Invalid paste coordinates ({paste_x}, {paste_y}) - skipping mask paste")
+            print(f"WARNING: Invalid paste coordinates ({paste_x}, {paste_y}) - skipping mask paste")
         
         # Only log surgical positioning every 50 frames to avoid console spam
         if _parsing_cache["call_count"] % 50 == 1:
             offset_info = f", offset {mouth_vertical_offset:+.2f}" if mouth_vertical_offset != 0.0 else ""
             scale_info = f", scale {mouth_scale_factor:.2f}" if mouth_scale_factor != 1.0 else ""
-            print(f"Surgical positioning: mouth center ({mouth_center_x:.1f}, {mouth_center_y + offset_pixels:.1f}), width {mouth_width:.1f}px→{base_mouth_width:.1f}px{offset_info}{scale_info}")
+            print(f"Surgical positioning: mouth center ({mouth_center_x:.1f}, {mouth_center_y + offset_pixels:.1f}), width {mouth_width:.1f}px->{base_mouth_width:.1f}px{offset_info}{scale_info}")
         
     elif use_elliptical_mask:
         # Fallback: Create elliptical mask for more natural blending (original method)
@@ -446,7 +446,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
     # 将裁剪的面部图像粘贴回扩展后的面部区域
     face_large.paste(face, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))
     
-    # 🔍 DEBUG: Save debug outputs if requested
+    # DEBUG: Save debug outputs if requested
     if debug_mouth_mask and debug_frame_idx is not None and debug_output_dir is not None:
         import os
         os.makedirs(debug_output_dir, exist_ok=True)
@@ -496,7 +496,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         overlay_vis = cv2.addWeighted(original_full, 0.7, mask_colored, 0.3, 0)
         cv2.imwrite(f"{debug_output_dir}/frame_{debug_frame_idx:06d}_mask_overlay.png", overlay_vis)
         
-        print(f"Debug saved: frame {debug_frame_idx} → {debug_output_dir}/")
+        print(f"Debug saved: frame {debug_frame_idx} -> {debug_output_dir}/")
     
     body.paste(face_large, crop_box[:2], mask_image)
     

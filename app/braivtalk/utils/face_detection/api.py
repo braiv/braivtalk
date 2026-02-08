@@ -616,6 +616,14 @@ class YOLOv8_face:
         self.frames_since_primary_established = 0
         self.primary_face_locked = False
 
+    def set_primary_face(self, bbox):
+        """Externally set and lock the primary face (e.g. from ASD speaker selection)."""
+        self.primary_face_bbox = bbox
+        self.primary_face_confidence = 1.0
+        self.frames_since_primary_established = self.primary_face_lock_threshold
+        self.primary_face_locked = True
+        print(f"[YOLOv8] Primary face externally set and locked: bbox={bbox}")
+
     def _convert_to_xyxy(self, bbox_xywh):
         """Convert YOLOv8 xywh format to SFD xyxy format"""
         cx, cy, w, h = bbox_xywh

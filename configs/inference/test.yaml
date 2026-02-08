@@ -19,7 +19,7 @@ task_0:
  # mask_shape: "ultra_wide_ellipse"
  # mask_height_ratio: 0.85
  # mask_corner_radius: 0.2
- # debug_mouth_mask: true
+ debug_mouth_mask: true
  # parsing_interval: 5
  #
  # # YOLO face-selection params
@@ -30,3 +30,8 @@ task_0:
  # yolo_max_face_jump: 0.3
  # yolo_primary_face_lock_threshold: 10
  # yolo_primary_face_confidence_drop: 0.8
+ #
+ # # Active Speaker Detection (LR-ASD) params
+ enable_asd: true
+ # asd_threshold: 0.0
+ # asd_model_path: "models/lr_asd/pretrain_AVA.model"

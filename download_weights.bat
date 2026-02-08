@@ -4,7 +4,7 @@ setlocal
 :: Set the checkpoints directory
 set CheckpointsDir=models
 
-:: Create necessary directories (baseline + optional GPEN-BFR)
+:: Create necessary directories (baseline + optional GPEN-BFR + ASD)
 mkdir %CheckpointsDir%\musetalkV15
 mkdir %CheckpointsDir%\face-parse-bisent
 mkdir %CheckpointsDir%\sd-vae
@@ -12,6 +12,7 @@ mkdir %CheckpointsDir%\whisper
 mkdir %CheckpointsDir%\face_detection
 mkdir %CheckpointsDir%\face_detection\weights
 mkdir %CheckpointsDir%\gpen_bfr
+mkdir %CheckpointsDir%\lr_asd
 
 :: Set HuggingFace endpoint
 set HF_ENDPOINT=https://hf-mirror.com
@@ -38,6 +39,12 @@ curl -L "https://github.com/facefusion/facefusion-assets/releases/download/model
 :: Download YOLOv8 Face Detection ONNX model
 echo Downloading YOLOv8 Face Detection model...
 curl -L "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yoloface_8n.onnx" -o %CheckpointsDir%\face_detection\weights\yoloface_8n.onnx
+
+:: Download LR-ASD Active Speaker Detection weights
+echo Downloading LR-ASD pretrained model (AVA)...
+curl -L "https://github.com/Junhua-Liao/LR-ASD/raw/main/weight/pretrain_AVA.model" -o %CheckpointsDir%\lr_asd\pretrain_AVA.model
+echo Downloading LR-ASD fine-tuned model (TalkSet)...
+curl -L "https://github.com/Junhua-Liao/LR-ASD/raw/main/weight/finetuning_TalkSet.model" -o %CheckpointsDir%\lr_asd\finetuning_TalkSet.model
 
 echo All weights have been downloaded successfully!
 endlocal

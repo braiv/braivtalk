@@ -5,6 +5,7 @@ Provides optimized frame writing with threading for improved performance.
 """
 
 import cv2
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -29,23 +30,31 @@ class ParallelFrameWriter:
 
     def _write_frame(self, frame_idx, frame_array, output_path):
         try:
-            filename = f"{output_path}/{str(frame_idx).zfill(8)}.png"
+            filename = os.path.join(output_path, f"{str(frame_idx).zfill(8)}.png")
+            if frame_array is None:
+                print(f"ERROR: Frame {frame_idx} data is None, skipping write")
+                return False
+            if not os.path.isdir(output_path):
+                print(f"ERROR: Output directory does not exist: {output_path}")
+                os.makedirs(output_path, exist_ok=True)
             success = cv2.imwrite(filename, frame_array)
             if success:
                 self.frames_written += 1
                 return True
             else:
-                print(f"❌ Failed to write frame {frame_idx}")
+                print(f"ERROR: Failed to write frame {frame_idx} "
+                      f"(path={filename}, shape={getattr(frame_array, 'shape', 'N/A')}, "
+                      f"dtype={getattr(frame_array, 'dtype', 'N/A')})")
                 return False
         except Exception as e:
-            print(f"❌ Error writing frame {frame_idx}: {e}")
+            print(f"ERROR: Error writing frame {frame_idx}: {e}")
             return False
 
     def wait_for_completion(self):
         if not self.futures:
             return
 
-        print(f"⏳ Finalizing {len(self.futures)} frame writes...")
+        print(f"Finalizing {len(self.futures)} frame writes...")
 
         completed = 0
         for future in as_completed(self.futures):
@@ -53,13 +62,13 @@ class ParallelFrameWriter:
                 future.result(timeout=30)
                 completed += 1
                 if completed % 100 == 0:
-                    print(f"📊 Completed {completed}/{len(self.futures)} writes")
+                    print(f"Completed {completed}/{len(self.futures)} writes")
             except Exception as e:
-                print(f"❌ Frame write error: {e}")
+                print(f"ERROR: Frame write error: {e}")
 
         elapsed = time.time() - self.start_time
         fps = self.frames_written / elapsed if elapsed > 0 else 0
-        print(f"✅ Parallel I/O: Wrote {self.frames_written} frames in {elapsed:.2f}s ({fps:.1f} FPS)")
+        print(f"Parallel I/O: Wrote {self.frames_written} frames in {elapsed:.2f}s ({fps:.1f} FPS)")
 
     def get_stats(self):
         elapsed = time.time() - self.start_time

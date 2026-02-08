@@ -60,12 +60,17 @@ REM Detection interval: detect faces every N frames, interpolate the rest.
 REM   1 = every frame (original), 5 = ~5x faster detection with interpolation.
 set "DETECTION_INTERVAL=5"
 
+REM Active Speaker Detection: uncomment to enable LR-ASD
+REM   Requires models/lr_asd/pretrain_AVA.model (run download_weights.bat first)
+REM set "ENABLE_ASD=--enable_asd"
+
 python app\scripts\inference.py ^
   --inference_config "%CONFIG_PATH%" ^
   --result_dir "%RESULT_DIR%" ^
   --unet_model_path "%UNET_MODEL_PATH%" ^
   --unet_config "%UNET_CONFIG%" ^
   --version "%VERSION_ARG%" ^
-  --detection_interval "%DETECTION_INTERVAL%"
+  --detection_interval "%DETECTION_INTERVAL%" ^
+  %ENABLE_ASD%
 
 endlocal

@@ -105,31 +105,70 @@ def read_video_frames(video_path):
 
 
 def _detect_single_frame(frame, upperbondrange, using_yolo):
-    """Run face detection on a single frame. Returns (coord, landmark_points)."""
+    """Run face detection on a single frame. Returns (coord, landmark_points).
+
+    When using YOLOv8, this routes through ``get_detections_for_batch`` so that
+    the primary-face locking system (including ASD speaker selection) is honoured.
+    """
     if using_yolo:
+        # Detect ALL faces in the frame
         det_bboxes, det_conf, _det_classid, landmarks = fa.detect(frame)
 
-        if len(det_bboxes) > 0 and len(det_conf) > 0 and det_conf[0] > fa.conf_threshold:
-            bbox = det_bboxes[0]
-            x1, y1, x2, y2 = bbox.astype(int)
+        if len(det_bboxes) == 0 or len(det_conf) == 0:
+            return coord_placeholder, None
 
-            if upperbondrange != 0:
-                y1 = max(0, y1 + upperbondrange)
+        # Filter by confidence
+        valid_indices = [i for i, c in enumerate(det_conf) if c > fa.conf_threshold]
+        if not valid_indices:
+            return coord_placeholder, None
 
-            img_height, img_width = frame.shape[:2]
-            x1 = max(0, x1)
-            x2 = min(img_width, x2)
-            y1 = max(0, y1)
-            y2 = min(img_height, y2)
+        # Use the primary-face-aware selection (honours set_primary_face lock)
+        selected_bbox = fa._select_best_face(
+            det_bboxes[valid_indices],
+            det_conf[valid_indices],
+            landmarks[valid_indices] if len(landmarks) > 0 else None,
+            frame.shape,
+            fa.primary_face_bbox,  # temporal reference = locked primary face
+        )
 
-            landmark_points = None
-            if len(landmarks) > 0:
-                face_landmarks = landmarks[0]
+        if selected_bbox is None:
+            return coord_placeholder, None
+
+        x1, y1, x2, y2 = selected_bbox.astype(int)
+
+        if upperbondrange != 0:
+            y1 = max(0, y1 + upperbondrange)
+
+        img_height, img_width = frame.shape[:2]
+        x1 = max(0, x1)
+        x2 = min(img_width, x2)
+        y1 = max(0, y1)
+        y2 = min(img_height, y2)
+
+        # Extract landmarks for the selected face (find matching index)
+        landmark_points = None
+        if len(landmarks) > 0 and selected_bbox is not None:
+            # Find which valid detection matches the selected bbox
+            for idx in valid_indices:
+                if np.allclose(det_bboxes[idx], selected_bbox, atol=1.0):
+                    face_landmarks = landmarks[idx]
+                    landmark_points = [(float(pt[0]), float(pt[1])) for pt in face_landmarks]
+                    break
+            # Fallback: use landmarks from the closest detection
+            if landmark_points is None:
+                best_dist = float('inf')
+                best_lm_idx = valid_indices[0]
+                sel_center = np.array([(selected_bbox[0]+selected_bbox[2])/2, (selected_bbox[1]+selected_bbox[3])/2])
+                for idx in valid_indices:
+                    det_center = np.array([(det_bboxes[idx][0]+det_bboxes[idx][2])/2, (det_bboxes[idx][1]+det_bboxes[idx][3])/2])
+                    dist = np.linalg.norm(sel_center - det_center)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_lm_idx = idx
+                face_landmarks = landmarks[best_lm_idx]
                 landmark_points = [(float(pt[0]), float(pt[1])) for pt in face_landmarks]
 
-            return (x1, y1, x2, y2), landmark_points
-        else:
-            return coord_placeholder, None
+        return (x1, y1, x2, y2), landmark_points
     else:
         bbox_result = fa.get_detections_for_batch(np.asarray([frame]))
         f = bbox_result[0]

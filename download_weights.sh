@@ -3,8 +3,8 @@
 # Set the checkpoints directory
 CheckpointsDir="models"
 
-# Create necessary directories (baseline + optional GPEN-BFR)
-mkdir -p models/musetalkV15 models/face-parse-bisent models/sd-vae models/whisper models/face_detection/weights models/gpen_bfr
+# Create necessary directories (baseline + optional GPEN-BFR + ASD)
+mkdir -p models/musetalkV15 models/face-parse-bisent models/sd-vae models/whisper models/face_detection/weights models/gpen_bfr models/lr_asd
 
 # Set HuggingFace mirror endpoint
 export HF_ENDPOINT=https://hf-mirror.com
@@ -39,4 +39,12 @@ echo "📥 Downloading YOLOv8 Face Detection model..."
 curl -L "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/yoloface_8n.onnx" \
   -o $CheckpointsDir/face_detection/weights/yoloface_8n.onnx
 
-echo "✅ All weights have been downloaded successfully!" 
+# Download LR-ASD Active Speaker Detection weights
+echo "Downloading LR-ASD pretrained model (AVA)..."
+curl -L "https://github.com/Junhua-Liao/LR-ASD/raw/main/weight/pretrain_AVA.model" \
+  -o $CheckpointsDir/lr_asd/pretrain_AVA.model
+echo "Downloading LR-ASD fine-tuned model (TalkSet)..."
+curl -L "https://github.com/Junhua-Liao/LR-ASD/raw/main/weight/finetuning_TalkSet.model" \
+  -o $CheckpointsDir/lr_asd/finetuning_TalkSet.model
+
+echo "All weights have been downloaded successfully!" 

@@ -46,18 +46,18 @@ def _check_onnx_availability():
         providers = []
         if "CUDAExecutionProvider" in available_providers:
             providers.append("CUDAExecutionProvider")
-            print("✅ CUDA provider available for GPEN-BFR")
+            print("CUDA provider available for GPEN-BFR")
         if "CPUExecutionProvider" in available_providers:
             providers.append("CPUExecutionProvider")
 
         _onnx_available = {"available": True, "onnxruntime": ort, "providers": providers}
 
-        print(f"✅ ONNX Runtime available with providers: {providers}")
+        print(f"ONNX Runtime available with providers: {providers}")
         return _onnx_available
 
     except ImportError as e:
-        print(f"❌ ONNX Runtime not available: {e}")
-        print("💡 Install with: pip install onnxruntime-gpu")
+        print(f"ONNX Runtime not available: {e}")
+        print("Install with: pip install onnxruntime-gpu")
         _onnx_available = {"available": False, "error": str(e)}
         return _onnx_available
 
@@ -79,7 +79,7 @@ class GPENBFREnhancer:
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"GPEN-BFR model not found: {model_path}\n"
-                f"💡 Download with: python download_weights.bat (Windows) or ./download_weights.sh (Linux/macOS)"
+                f"Download with: python download_weights.bat (Windows) or ./download_weights.sh (Linux/macOS)"
             )
 
         self.model_path = model_path
@@ -90,7 +90,7 @@ class GPENBFREnhancer:
         else:
             self.config = get_config_by_name(config_name) if GPEN_BFR_CONFIGS is not None else get_config_by_name("CONSERVATIVE")
 
-        print(f"🎨 Using enhancement config: {self.config.get('name', config_name)}")
+        print(f"Using enhancement config: {self.config.get('name', config_name)}")
 
         self.providers = self._setup_providers(device, onnx_info["providers"])
 
@@ -116,7 +116,7 @@ class GPENBFREnhancer:
             self.input_shape = self.session.get_inputs()[0].shape
             self.output_shape = self.session.get_outputs()[0].shape
 
-            print("✅ GPEN-BFR initialized successfully")
+            print("GPEN-BFR initialized successfully")
             print(f"   Model: {os.path.basename(model_path)}")
             print(f"   Providers: {self.session.get_providers()}")
             print(f"   Input shape: {self.input_shape}")
@@ -203,7 +203,7 @@ class GPENBFREnhancer:
 
             return enhanced_face
         except Exception as e:
-            print(f"⚠️ GPEN-BFR enhancement failed for face: {e}")
+            print(f"WARNING: GPEN-BFR enhancement failed for face: {e}")
             if face_image.shape[:2] != (256, 256):
                 return cv2.resize(face_image, (256, 256), interpolation=cv2.INTER_LANCZOS4)
             return face_image.copy()
@@ -214,11 +214,11 @@ class GPENBFREnhancer:
 
         for i, face in enumerate(face_images):
             if show_progress:
-                print(f"🎨 Enhancing face {i+1}/{total_faces} with GPEN-BFR...")
+                print(f"Enhancing face {i+1}/{total_faces} with GPEN-BFR...")
             enhanced_faces.append(self.enhance_face(face))
 
         if show_progress:
-            print(f"✅ Enhanced {total_faces} faces with GPEN-BFR")
+            print(f"Enhanced {total_faces} faces with GPEN-BFR")
 
         return enhanced_faces
 
