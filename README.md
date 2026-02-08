@@ -37,7 +37,7 @@ conda activate braivtalk
 # Install core dependencies
 pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
 pip install diffusers==0.32.2 transformers==4.48.0 numpy==1.26.4
-pip install librosa soundfile opencv-python huggingface_hub
+pip install librosa soundfile opencv-python huggingface-hub
 pip install omegaconf tqdm yacs av accelerate
 
 # Install CUDA runtime and cuDNN for FaceFusion-style GPU acceleration

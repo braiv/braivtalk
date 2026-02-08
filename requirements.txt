@@ -10,7 +10,7 @@ librosa==0.11.0
 soundfile==0.12.1
 opencv-python==4.9.0.80
 einops==0.8.1
-huggingface_hub==0.30.2
+huggingface-hub[cli]==0.30.2
 omegaconf==2.3.0
 Pillow>=10.0.0
 tqdm>=4.0.0
