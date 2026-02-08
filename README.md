@@ -37,7 +37,7 @@ conda activate braivtalk
 # Install core dependencies
 pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
 pip install diffusers==0.32.2 transformers==4.48.0 numpy==1.26.4
-pip install librosa soundfile opencv-python gradio huggingface_hub
+pip install librosa soundfile opencv-python huggingface_hub
 pip install omegaconf tqdm yacs av accelerate
 
 # Install CUDA runtime and cuDNN for FaceFusion-style GPU acceleration
@@ -64,34 +64,84 @@ chmod +x download_weights.sh
 ### **3. Quick Test**
 
 ```bash
-# Basic inference
-python -m scripts.inference \
-  --inference_config configs/inference/test.yaml \
-  --result_dir results/test \
-  --unet_model_path models/musetalkV15/unet.pth \
-  --unet_config models/musetalkV15/musetalk.json \
-  --version v15 \
-  --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared/bin
+# Mac/Linux
+chmod +x ./inference.sh
+./inference.sh v1.5
 
-# With face enhancement (recommended)
-python -m scripts.inference \
-  --inference_config configs/inference/test.yaml \
-  --result_dir results/test_enhanced \
-  --unet_model_path models/musetalkV15/unet.pth \
-  --unet_config models/musetalkV15/musetalk.json \
-  --version v15 \
-  --enable_gpen_bfr \
-  --gpen_bfr_config CONSERVATIVE \
-  --ffmpeg_path ffmpeg-master-latest-win64-gpl-shared/bin
+# Windows
+inference.bat v1.5
+
+# Optional: point at a specific YAML config
+./inference.sh v1.5 ./configs/inference/test.yaml
 ```
 
-### **4. Gradio Web Interface**
+### **4. Web UI**
 
-```bash
-python app.py
+The Gradio UI has been intentionally removed to keep the repo focused on the **CLI-first inference pipeline**. When you’re ready to integrate into your platform UI, we can add back a thin wrapper that calls `app/scripts/inference.py` rather than duplicating pipeline logic.
+
+## 🧠 **Pipeline (Models + Flow Order)**
+
+BraivTalk is **CLI-first**. The supported inference entrypoint is:
+
+- `app/scripts/inference.py` (recommended via `./inference.sh` or `inference.bat`)
+
+### **Models used**
+
+- **MuseTalk (lip-sync generator)**:
+  - **VAE**: encodes/decodes 256×256 face crops
+  - **UNet2DConditionModel** (+ PositionalEncoding): predicts audio-conditioned latents
+- **Whisper (audio conditioning)**:
+  - `transformers.WhisperModel` encoder hidden states (chunked per video frame)
+- **Face detection**:
+  - Primary: **YOLOv8 face detector (ONNX Runtime)** producing bbox + 5-point landmarks (when weights are present)
+  - Fallback: **SFD / FaceAlignment** bbox detector
+- **FaceParsing**: segmentation-guided blending refinement
+- **Optional**: **GPEN-BFR** face enhancement (ONNX Runtime) on decoded 256×256 faces
+
+### **Execution order (high level)**
+
+1. **Init models** (GPU if available): MuseTalk VAE+UNet(+PE), Whisper, FaceParsing, optional GPEN-BFR
+2. **Extract frames** (CPU): FFmpeg → PNG frames (or accept a single image / directory)
+3. **Audio features** (GPU if available): librosa → Whisper encoder → per-frame chunks
+4. **Face detection + landmarks** (hybrid): YOLOv8 ONNX or SFD fallback
+5. **Crop + VAE encode** (GPU): 256×256 face crops → latents (non-face frames become passthrough)
+6. **UNet inference + VAE decode** (GPU): audio-conditioned latents → 256×256 generated face patches
+7. **Optional enhancement** (hybrid): GPEN-BFR improves decoded face patch quality
+8. **Blend back** (hybrid): masks + FaceParsing refine + composite into original frames
+9. **Encode + mux** (hybrid): FFmpeg encodes MP4 (GPU encoders if available) and muxes audio
+
+### **Flow chart**
+
+```mermaid
+flowchart TD
+  A[Inputs: video + audio] --> B[FFmpeg: extract frames<br/>CPU]
+  A --> C[Audio: librosa + Whisper encoder + chunking<br/>GPU]
+
+  B --> D[Face detection per frame<br/>Hybrid: YOLOv8 ONNX (CUDA/CPU) or SFD fallback]
+  D --> E{Face found?}
+
+  E -- No --> F[Passthrough frame<br/>CPU]
+  E -- Yes --> G[Crop + resize 256x256<br/>CPU]
+  G --> H[VAE encode latents<br/>GPU]
+
+  C --> I[datagen_enhanced batching<br/>CPU]
+  H --> I
+
+  I --> J[UNet inference (audio-conditioned)<br/>GPU]
+  J --> K[VAE decode face patch<br/>GPU]
+
+  K --> L{GPEN-BFR enabled?}
+  L -- Yes --> M[GPEN-BFR enhance (ONNX)<br/>Hybrid]
+  L -- No --> N[Skip]
+
+  M --> O[Blend into original frame<br/>Hybrid: CPU + FaceParsing GPU]
+  N --> O
+  F --> P[Write output frames<br/>CPU]
+  O --> P
+
+  P --> Q[FFmpeg encode + mux audio<br/>Hybrid]
+  Q --> R[Output MP4]
 ```
-
-Access the web interface at `http://localhost:7860`
 
 ## 🔧 **Key Enhancements**
 
@@ -133,21 +183,13 @@ Access the web interface at `http://localhost:7860`
 
 ```
 braivtalk/
-├── scripts/
-│   ├── inference.py              # Main inference with cutaway handling + GPEN-BFR
-│   ├── preprocess.py             # Enhanced preprocessing
-│   └── realtime_inference.py     # Real-time processing
-├── musetalk/
-│   ├── models/                   # Core MuseTalk models (VAE, UNet)
-│   ├── utils/
-│   │   ├── preprocessing.py      # Enhanced face detection & landmarks
-│   │   ├── utils.py              # Data generation with passthrough support
-│   │   └── blending.py           # Image composition
-│   └── whisper/                  # Audio feature extraction
-├── face-enhancers/
-│   ├── gpen_bfr_enhancer.py      # GPEN-BFR face enhancement wrapper
-│   ├── gpen_bfr_parameter_configs.py # Enhancement presets
-│   └── test_gpen_bfr_*.py        # Testing and verification scripts
+├── app/
+│   ├── scripts/
+│   │   ├── inference.py          # Main CLI inference entrypoint
+│   │   └── __init__.py
+│   └── braivtalk/                # Python package (pipeline implementation)
+│       ├── models/               # MuseTalk model wrappers (VAE, UNet, SyncNet)
+│       └── utils/                # Preprocess, batching, blending, face parsing/detection
 ├── configs/
 │   └── inference/                # Configuration files
 ├── data/
@@ -156,6 +198,8 @@ braivtalk/
 ├── models/
 │   ├── gpen_bfr/                 # GPEN-BFR ONNX models
 │   └── [other models]/           # Downloaded model weights
+├── inference.sh                  # Mac/Linux helper
+├── inference.bat                 # Windows helper
 └── results/                      # Generated outputs
 ```
 
@@ -165,11 +209,10 @@ braivtalk/
 
 | File | Enhancement | Purpose |
 |------|-------------|---------|
-| `musetalk/utils/preprocessing.py` | Face detection optimization | Handles cutaway frames gracefully |
-| `musetalk/utils/utils.py` | Enhanced data generation | Supports both processing and passthrough |
-| `scripts/inference.py` | Cutaway handling + GPEN-BFR | Main inference with frame continuity and face enhancement |
-| `face-enhancers/gpen_bfr_enhancer.py` | ONNX face enhancement | GPEN-BFR wrapper with configurable presets |
-| `app.py` | Web interface updates | Gradio interface with enhanced pipeline |
+| `app/braivtalk/utils/preprocessing.py` | Face detection optimization | Handles cutaway frames gracefully |
+| `app/braivtalk/utils/utils.py` | Enhanced data generation | Supports both processing and passthrough |
+| `app/scripts/inference.py` | Main pipeline orchestration | Cutaway handling, batching, blending, encoding |
+| `app/braivtalk/enhancers/` | ONNX face enhancement (optional) | GPEN-BFR wrapper + presets |
 
 ### **Development Setup**
 
@@ -201,32 +244,30 @@ python -c "import diffusers; print('Diffusers:', diffusers.__version__)"
 python -c "import onnxruntime; print('ONNX Runtime:', onnxruntime.__version__, 'Providers:', onnxruntime.get_available_providers())"
 
 # Test inference pipeline
-python -m scripts.inference --inference_config configs/inference/test.yaml --result_dir results/dev_test --unet_model_path models/musetalkV15/unet.pth --unet_config models/musetalkV15/musetalk.json --version v15
+./inference.sh v1.5
 ```
 
 ## ⚙️ **Performance Tuning**
 
 ### **Batch Size Configuration**
 
-Adjust batch sizes based on your GPU memory:
+Adjust `--batch_size` based on your GPU memory (larger = faster, but higher VRAM usage).
 
-```python
-# Conservative (4GB+ GPU)
-batch_size = 4
-batch_size_fa = 1
+Example (run the pipeline directly so you can pass tuning flags):
 
-# Moderate (8GB+ GPU) 
-batch_size = 12
-batch_size_fa = 1
-
-# Aggressive (16GB+ GPU)
-batch_size = 24
-batch_size_fa = 2
+```bash
+PYTHONPATH=./app python3 app/scripts/inference.py \
+  --inference_config configs/inference/test.yaml \
+  --result_dir results/dev_test \
+  --unet_model_path models/musetalkV15/unet.pth \
+  --unet_config models/musetalkV15/musetalk.json \
+  --version v15 \
+  --batch_size 8
 ```
 
 ### **Memory Optimization**
 
-- Use FP16 precision: `--fp16` flag
+- Use FP16 precision: `--use_float16`
 - Reduce batch sizes if experiencing OOM errors
 - Close other GPU applications during processing
 - Monitor GPU memory usage with `nvidia-smi`
@@ -266,7 +307,6 @@ debug_mouth_mask: true            # Save debug outputs for troubleshooting
 - [x] GPU batch optimization
 - [x] FFmpeg integration fixes
 - [x] Cross-platform compatibility
-- [x] Gradio web interface
 - [x] Comprehensive error handling
 - [x] **YOLOv8 face detection integration** - Complete SFD replacement
 - [x] **Surgical mouth positioning** - Landmark-based precision placement
@@ -279,7 +319,6 @@ debug_mouth_mask: true            # Save debug outputs for troubleshooting
 
 ### **🚧 In Progress**
 - [ ] Advanced mask gradients and smoothing effects
-- [ ] Real-time processing optimization
 - [ ] Multi-speaker support
 
 ### **📋 Planned Features**
@@ -299,7 +338,8 @@ debug_mouth_mask: true            # Save debug outputs for troubleshooting
 
 **Out of memory errors**
 - Reduce `batch_size` in inference scripts
-- Use `batch_size_fa=1` for face detection
+- Use `--use_float16` to reduce VRAM
+- Close other GPU applications while running
 - Close other GPU applications
 
 **FFmpeg not found**
@@ -318,13 +358,12 @@ debug_mouth_mask: true            # Save debug outputs for troubleshooting
 **GPEN-BFR enhancement not working**
 - Verify ONNX Runtime installation: `python -c "import onnxruntime; print('OK')"`
 - Check model download: Ensure `models/gpen_bfr/gpen_bfr_256.onnx` exists
-- Test setup: `python face-enhancers/test_gpen_bfr_setup.py`
-- Use `--gpen_bfr_config CONSERVATIVE` for best results
+- Use `--enable_gpen_bfr --gpen_bfr_config CONSERVATIVE` for best results
 
 ## 📚 **Documentation**
 
-- **[Face Enhancement Guide](face-enhancers/README.md)** - GPEN-BFR setup and usage
-- **[Pipeline Overview](pipeline.md)** - Complete processing pipeline
+- **Face enhancement**: `app/braivtalk/enhancers/` (GPEN-BFR wrapper + presets)
+- **[Pipeline Overview](plans/pipeline.md)** - Complete processing pipeline
 - **[Dependency Tree](diagrams/02_dependency_tree.mmd)** - Project dependencies
 - **[Code Structure](diagrams/03_code_structure.mmd)** - Architecture overview
 - **[Diagrams](diagrams/)** - Technical documentation
@@ -347,21 +386,9 @@ This project builds upon MuseTalk and maintains compatibility with its licensing
 ## 🔗 **Links**
 
 - **[Original MuseTalk](https://github.com/TMElyralab/MuseTalk)** - Base repository
-- **[Gradio](https://gradio.app/)** - Web interface framework
 - **[Architecture Diagrams](diagrams/)** - Detailed technical documentation
 
 ---
 
-*BraivTalk - Enhanced MuseTalk v2.2.0*  
-*Last updated: January 2025*  
-*New in v2.2.0: YOLOv8 Surgical Precision & Advanced Mouth Overlay System*
-
-### **🎯 v2.2.0 Major Features**
-- **YOLOv8 Face Detection**: Complete SFD replacement with 20%+ performance boost
-- **Surgical Mouth Positioning**: Landmark-based precision placement using 5-point facial coordinates
-- **Dynamic Mouth Sizing**: AI mouth automatically matches original dimensions for perfect coverage
-- **Advanced Mask Shapes**: Multiple geometric options (ellipse, triangle, rounded triangle, wide ellipse)
-- **Jitter Elimination**: Stable frame-to-frame positioning eliminates coordinate jumping
-- **Debug Visualization**: Complete mask overlay system with troubleshooting outputs
-- **YAML Configuration**: Production-ready parameter management without code changes
-- **Enhanced Error Handling**: Robust bounds checking and graceful fallbacks
+*BraivTalk - MuseTalk-derived lip-sync pipeline*  
+*Last updated: February 2026*

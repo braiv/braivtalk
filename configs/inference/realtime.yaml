@@ -1,9 +1,0 @@
-avator_1:
- preparation: True # your can set it to False if you want to use the existing avator, it will save time
- bbox_shift: 5
- video_path: "data/video/Canva_en.mp4"
- audio_clips:
-     audio_0: "data/audio/Canva_FR.m4a"
- 
-  
-

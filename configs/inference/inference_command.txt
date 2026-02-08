@@ -1,1 +1,1 @@
-$env:PYTHONPATH="$env:PYTHONPATH;$PWD"; python scripts/inference.py --inference_config configs/inference/test.yaml --unet_config ./models/musetalkV15/musetalk.json --enable_gpen_bfr
+$env:PYTHONPATH="$env:PYTHONPATH;$PWD\\app"; python app/scripts/inference.py --inference_config configs/inference/test.yaml --unet_config ./models/musetalkV15/musetalk.json --enable_gpen_bfr

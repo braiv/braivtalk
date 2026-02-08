@@ -11,11 +11,10 @@ models/
 *$py.class
 dataset/
 ffmpeg*
-ffmprobe*
+ffprobe*
 ffplay*
 debug
 exp_out
-.gradio
 /data
 /facefusion
 /test_gfpgan_output

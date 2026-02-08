@@ -1,37 +1,31 @@
 task_0:
- video_path: "data/video/Canva_en.mp4"
- audio_path: "data/audio/Canva_FR.m4a"
- result_name: "Canva_yolo.mp4"
- result_dir: "./results"
- bbox_shift: 7
+ video_path: "data/video/test.mp4"
+ audio_path: "data/audio/test.mp3"
+ result_name: "test-dub.mp4"
+ result_dir: "./results"   # CLI arg `--result_dir` controls this (default: ./results)
+ # bbox_shift: 7             # Only needed for v1; v15 uses fixed behavior in code
  
- # YOLOv8 Surgical Mouth Positioning Parameters - NATURAL SIZING
- ellipse_padding_factor: 0.02      # ULTRA coverage (smaller = larger coverage) 
- upper_boundary_ratio: 0.22        # Maximum face coverage (smaller = more coverage)  
- expand_factor: 1.9                # Generous face crop expansion for edge cases
- use_elliptical_mask: true         # Use elliptical mask (recommended)
- blur_kernel_ratio: 0.06           # Optimal mask smoothing for natural blending
- 
- # Precise Mouth Positioning & Sizing - NATURAL SIZING
- mouth_vertical_offset: 0          # Vertical mouth position (0 = perfect YOLOv8 positioning)
- mouth_scale_factor: 1.0           # NO scaling - use natural YOLOv8 detected mouth size
-
- # Advanced Mask Shape Options - ULTRA WIDE COVERAGE
- mask_shape: "ultra_wide_ellipse"        # BEST: 80% wider than standard ellipse
- mask_height_ratio: 0.85           # Slightly reduced for more natural proportions
- mask_corner_radius: 0.15          # Softer corners for better blending
- # NOTE: ultra_wide_ellipse provides maximum coverage while maintaining natural proportions
- 
- # Debug Options
- debug_mouth_mask: true            # Enable debug outputs for troubleshooting
-
- # YOLOv8 Face Selection Parameters (NEW)
- yolo_conf_threshold: 0.5          # Minimum confidence for face detection (0.2-0.8)
- yolo_temporal_weight: 0.25        # Weight for temporal consistency (prevent face switching)
- yolo_size_weight: 0.30            # Weight for face size (prefer larger faces)
- yolo_center_weight: 0.20          # Weight for center position (prefer centered faces)
- yolo_max_face_jump: 0.3           # Maximum allowed face center jump (as fraction of frame width)
-
- # Primary Face Locking (ANTI-GLITCH PROTECTION)
- yolo_primary_face_lock_threshold: 10  # Lock primary face after N consistent frames (5-20)
- yolo_primary_face_confidence_drop: 0.8  # Allow confidence drop to this ratio before unlocking (0.6-0.9)
+ # --------------------------------------------
+ # OPTIONAL OVERRIDES (commented for baseline)
+ # --------------------------------------------
+ # # Mouth mask / blending params
+ # ellipse_padding_factor: 0.02
+ # upper_boundary_ratio: 0.22
+ # expand_factor: 1.9
+ # use_elliptical_mask: true
+ # blur_kernel_ratio: 0.06
+ # mouth_vertical_offset: 0.0
+ # mouth_scale_factor: 1.0
+ # mask_shape: "ultra_wide_ellipse"
+ # mask_height_ratio: 0.85
+ # mask_corner_radius: 0.15
+ # debug_mouth_mask: true
+ #
+ # # YOLO face-selection params
+ # yolo_conf_threshold: 0.5
+ # yolo_temporal_weight: 0.25
+ # yolo_size_weight: 0.30
+ # yolo_center_weight: 0.20
+ # yolo_max_face_jump: 0.3
+ # yolo_primary_face_lock_threshold: 10
+ # yolo_primary_face_confidence_drop: 0.8
