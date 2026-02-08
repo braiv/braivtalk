@@ -40,13 +40,13 @@ set "RESULT_DIR=.\results"
 
 if /i "%VERSION%"=="v1.0" (
   set "MODEL_DIR=.\models\musetalk"
-  set "UNET_MODEL_PATH=%MODEL_DIR%\pytorch_model.bin"
-  set "UNET_CONFIG=%MODEL_DIR%\musetalk.json"
+  set "UNET_MODEL_PATH=!MODEL_DIR!\pytorch_model.bin"
+  set "UNET_CONFIG=!MODEL_DIR!\musetalk.json"
   set "VERSION_ARG=v1"
 ) else if /i "%VERSION%"=="v1.5" (
   set "MODEL_DIR=.\models\musetalkV15"
-  set "UNET_MODEL_PATH=%MODEL_DIR%\unet.pth"
-  set "UNET_CONFIG=%MODEL_DIR%\musetalk.json"
+  set "UNET_MODEL_PATH=!MODEL_DIR!\unet.pth"
+  set "UNET_CONFIG=!MODEL_DIR!\musetalk.json"
   set "VERSION_ARG=v15"
 ) else (
   echo Invalid version "%VERSION%" ^(use v1.0 or v1.5^)
