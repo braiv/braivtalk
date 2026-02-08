@@ -16,6 +16,9 @@ mkdir %CheckpointsDir%\gpen_bfr
 :: Set HuggingFace endpoint
 set HF_ENDPOINT=https://hf-mirror.com
 
+:: Download MuseTalk V1.5 weights (unet.pth + config)
+python -m huggingface_hub.commands.huggingface_cli download TMElyralab/MuseTalk --local-dir %CheckpointsDir% --include "musetalkV15/musetalk.json" "musetalkV15/unet.pth"
+
 :: Download SD VAE weights
 python -m huggingface_hub.commands.huggingface_cli download stabilityai/sd-vae-ft-mse --local-dir %CheckpointsDir%\sd-vae --include "config.json" "diffusion_pytorch_model.bin"
 
