@@ -43,6 +43,7 @@ def get_image(
     mask_shape="ellipse",
     mask_height_ratio=0.4,
     mask_corner_radius=0.2,
+    parsing_interval=1,
 ):
     # NOTE: This file is copied from the existing pipeline implementation.
     # It contains extensive mask-shape logic; kept as-is for functional parity.
@@ -68,5 +69,6 @@ def get_image(
         mask_shape=mask_shape,
         mask_height_ratio=mask_height_ratio,
         mask_corner_radius=mask_corner_radius,
+        parsing_interval=parsing_interval,
     )
 

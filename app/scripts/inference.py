@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from braivtalk.utils.blending import get_image
+from braivtalk.utils._blending_impl import reset_parsing_cache
 from braivtalk.utils.face_parsing import FaceParsing
 from braivtalk.utils.audio_processor import AudioProcessor
 from braivtalk.utils.utils import get_file_type, get_video_fps, datagen_enhanced, load_all_model
@@ -118,6 +119,9 @@ def main(args):
     # Process each task
     for task_id in inference_config:
         try:
+            # Reset face parsing cache between tasks
+            reset_parsing_cache()
+
             # Get task configuration
             task_config = inference_config[task_id]
             video_path = task_config["video_path"]
@@ -130,7 +134,7 @@ def main(args):
                 'ellipse_padding_factor', 'upper_boundary_ratio', 'expand_factor',
                 'use_elliptical_mask', 'blur_kernel_ratio', 'mouth_vertical_offset',
                 'mouth_scale_factor', 'debug_mouth_mask', 'mask_shape',
-                'mask_height_ratio', 'mask_corner_radius',
+                'mask_height_ratio', 'mask_corner_radius', 'parsing_interval',
             ]
 
             # YOLOv8 face selection parameters
@@ -330,7 +334,7 @@ def main(args):
             with ThreadPoolExecutor(max_workers=4) as io_executor:
                 for i, res_frame in enumerate(tqdm(res_frame_list, desc="Processing frames")):
                     bbox = coord_list_cycle[i % (len(coord_list_cycle))]
-                    ori_frame = copy.deepcopy(frame_list_cycle[i % (len(frame_list_cycle))])
+                    ori_frame = frame_list_cycle[i % (len(frame_list_cycle))].copy()
 
                     if bbox == coord_placeholder or res_frame is None:
                         combine_frame = ori_frame
@@ -376,6 +380,7 @@ def main(args):
                                 mask_shape=args.mask_shape,
                                 mask_height_ratio=args.mask_height_ratio,
                                 mask_corner_radius=args.mask_corner_radius,
+                                parsing_interval=args.parsing_interval,
                             )
                         except Exception as e:
                             print(f"Frame {i}: Processing failed, using passthrough - {e}")
@@ -515,16 +520,17 @@ if __name__ == "__main__":
 
     # Mouth Overlay Accuracy Parameters
     parser.add_argument("--ellipse_padding_factor", type=float, default=0.1, help="Ellipse padding factor for mouth mask (smaller = larger mouth coverage, 0.06-0.15)")
-    parser.add_argument("--upper_boundary_ratio", type=float, default=0.5, help="Upper boundary ratio for face replacement (smaller = more face coverage, 0.3-0.7)")
+    parser.add_argument("--upper_boundary_ratio", type=float, default=0.4, help="Upper boundary ratio for face replacement (smaller = more face coverage, 0.3-0.7)")
     parser.add_argument("--expand_factor", type=float, default=1.5, help="Face crop expansion factor (larger = more context, 1.2-1.8)")
     parser.add_argument("--use_elliptical_mask", action="store_true", default=True, help="Use elliptical mask instead of rectangular (recommended)")
     parser.add_argument("--blur_kernel_ratio", type=float, default=0.05, help="Blur kernel size ratio for mask smoothing (0.02-0.08)")
     parser.add_argument("--mouth_vertical_offset", type=float, default=0.0, help="Vertical offset for mouth positioning (positive = lower, negative = higher, -0.05 to +0.05)")
-    parser.add_argument("--mouth_scale_factor", type=float, default=1.0, help="Scale factor for mouth size matching (1.0 = exact YOLOv8 size, 1.1-1.3 = larger for better coverage)")
+    parser.add_argument("--mouth_scale_factor", type=float, default=1.2, help="Scale factor for mouth size matching (1.0 = exact YOLOv8 size, 1.1-1.3 = larger for better coverage)")
     parser.add_argument("--debug_mouth_mask", action="store_true", help="Save debug outputs: isolated AI mouth, mask, and overlay visualization")
-    parser.add_argument("--mask_shape", type=str, default="ellipse", choices=["ellipse", "triangle", "rounded_triangle", "wide_ellipse", "ultra_wide_ellipse", "dynamic_contour"], help="Shape of the blending mask")
-    parser.add_argument("--mask_height_ratio", type=float, default=0.4, help="Height ratio for mask relative to mouth width")
+    parser.add_argument("--mask_shape", type=str, default="ultra_wide_ellipse", choices=["ellipse", "triangle", "rounded_triangle", "wide_ellipse", "ultra_wide_ellipse", "dynamic_contour"], help="Shape of the blending mask")
+    parser.add_argument("--mask_height_ratio", type=float, default=0.85, help="Height ratio for mask relative to mouth width")
     parser.add_argument("--mask_corner_radius", type=float, default=0.2, help="Corner radius for rounded shapes")
+    parser.add_argument("--parsing_interval", type=int, default=1, help="Face parsing interval: run BiSeNet every N frames, reuse cached mask in between (1=every frame, 5=5x faster blending)")
 
     # GPEN-BFR Face Enhancement Parameters
     parser.add_argument("--enable_gpen_bfr", action="store_true", help="Enable GPEN-BFR face enhancement")

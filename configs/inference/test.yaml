@@ -1,25 +1,26 @@
 task_0:
  video_path: "data/video/test.mp4"
  audio_path: "data/audio/test.mp3"
- result_name: "test-dub.mp4"
+ result_name: "test-dub-NEW.mp4"
  result_dir: "./results"   # CLI arg `--result_dir` controls this (default: ./results)
  # bbox_shift: 7             # Only needed for v1; v15 uses fixed behavior in code
  
  # --------------------------------------------
  # OPTIONAL OVERRIDES (commented for baseline)
  # --------------------------------------------
- # # Mouth mask / blending params
- # ellipse_padding_factor: 0.02
- # upper_boundary_ratio: 0.22
- # expand_factor: 1.9
+ # # Mouth mask / blending params (these are now the baseline defaults)
+ # ellipse_padding_factor: 0.1
+ # upper_boundary_ratio: 0.4
+ # expand_factor: 1.5
  # use_elliptical_mask: true
- # blur_kernel_ratio: 0.06
+ # blur_kernel_ratio: 0.05
  # mouth_vertical_offset: 0.0
- # mouth_scale_factor: 1.0
- mask_shape: "ultra_wide_ellipse"
+ # mouth_scale_factor: 1.2
+ # mask_shape: "ultra_wide_ellipse"
  # mask_height_ratio: 0.85
- # mask_corner_radius: 0.15
+ # mask_corner_radius: 0.2
  # debug_mouth_mask: true
+ # parsing_interval: 5
  #
  # # YOLO face-selection params
  # yolo_conf_threshold: 0.5

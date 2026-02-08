@@ -3,6 +3,20 @@ import numpy as np
 import cv2
 import copy
 
+# Module-level cache for face parsing results.
+# BiSeNet output barely changes between consecutive frames, so we can
+# safely reuse the mask for several frames and only refresh periodically.
+_parsing_cache = {
+    "mask_small": None,
+    "call_count": 0,
+}
+
+
+def reset_parsing_cache():
+    """Reset the parsing cache (call between tasks/videos)."""
+    _parsing_cache["mask_small"] = None
+    _parsing_cache["call_count"] = 0
+
 
 def get_crop_box(box, expand):
     x, y, x1, y1 = box
@@ -32,7 +46,7 @@ def face_seg(image, mode="raw", fp=None):
     return seg_image
 
 
-def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode="raw", fp=None, use_elliptical_mask=True, ellipse_padding_factor=0.1, blur_kernel_ratio=0.05, landmarks=None, mouth_vertical_offset=0.0, mouth_scale_factor=1.0, debug_mouth_mask=False, debug_frame_idx=None, debug_output_dir=None, mask_shape="ellipse", mask_height_ratio=0.4, mask_corner_radius=0.2):
+def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode="raw", fp=None, use_elliptical_mask=True, ellipse_padding_factor=0.1, blur_kernel_ratio=0.05, landmarks=None, mouth_vertical_offset=0.0, mouth_scale_factor=1.0, debug_mouth_mask=False, debug_frame_idx=None, debug_output_dir=None, mask_shape="ellipse", mask_height_ratio=0.4, mask_corner_radius=0.2, parsing_interval=1):
     """
     将裁剪的面部图像粘贴回原始图像，并进行一些处理。
     Enhanced with landmark-based surgical mouth positioning for improved accuracy.
@@ -74,10 +88,27 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         
     ori_shape = face_large.size  # 裁剪后图像的原始尺寸
 
-    # 对裁剪后的面部区域进行面部解析，生成掩码
-    mask_image = face_seg(face_large, mode=mode, fp=fp)
-    
-    mask_small = mask_image.crop((x - x_s, y - y_s, x1 - x_s, y1 - y_s))  # 裁剪出面部区域的掩码
+    # Face parsing with caching: only run BiSeNet every parsing_interval frames.
+    # The parsing mask (face skin vs. background) barely changes between consecutive
+    # frames, so reusing it is safe and gives a major speedup.
+    expected_size = (x1 - x, y1 - y)
+    run_fresh = (
+        _parsing_cache["mask_small"] is None
+        or parsing_interval <= 1
+        or _parsing_cache["call_count"] % parsing_interval == 0
+    )
+
+    if run_fresh:
+        mask_image_parsed = face_seg(face_large, mode=mode, fp=fp)
+        mask_small = mask_image_parsed.crop((x - x_s, y - y_s, x1 - x_s, y1 - y_s))
+        _parsing_cache["mask_small"] = mask_small
+    else:
+        mask_small = _parsing_cache["mask_small"]
+        # Resize cached mask if face bbox dimensions changed slightly
+        if mask_small.size != expected_size:
+            mask_small = mask_small.resize(expected_size, Image.BILINEAR)
+
+    _parsing_cache["call_count"] += 1
     
     # Create mask with surgical precision using landmarks if available
     mask_image = Image.new('L', ori_shape, 0)  # 创建一个全黑的掩码图像
@@ -327,9 +358,11 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         else:
             print(f"⚠️ Warning: Invalid paste coordinates ({paste_x}, {paste_y}) - skipping mask paste")
         
-        offset_info = f", offset {mouth_vertical_offset:+.2f}" if mouth_vertical_offset != 0.0 else ""
-        scale_info = f", scale {mouth_scale_factor:.2f}" if mouth_scale_factor != 1.0 else ""
-        print(f"Surgical positioning: mouth center ({mouth_center_x:.1f}, {mouth_center_y + offset_pixels:.1f}), width {mouth_width:.1f}px→{base_mouth_width:.1f}px{offset_info}{scale_info}")
+        # Only log surgical positioning every 50 frames to avoid console spam
+        if _parsing_cache["call_count"] % 50 == 1:
+            offset_info = f", offset {mouth_vertical_offset:+.2f}" if mouth_vertical_offset != 0.0 else ""
+            scale_info = f", scale {mouth_scale_factor:.2f}" if mouth_scale_factor != 1.0 else ""
+            print(f"Surgical positioning: mouth center ({mouth_center_x:.1f}, {mouth_center_y + offset_pixels:.1f}), width {mouth_width:.1f}px→{base_mouth_width:.1f}px{offset_info}{scale_info}")
         
     elif use_elliptical_mask:
         # Fallback: Create elliptical mask for more natural blending (original method)
@@ -375,7 +408,8 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         else:
             print(f"Warning: Invalid paste coordinates ({paste_x}, {paste_y}) - skipping elliptical mask paste")
         
-        print(f"Fallback: elliptical mask (no landmarks available)")
+        if _parsing_cache["call_count"] % 50 == 1:
+            print(f"Fallback: elliptical mask (no landmarks available)")
     else:
         # Original rectangular mask behavior with bounds checking
         paste_x = x - x_s
@@ -392,7 +426,8 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
                 print(f"Warning: Rectangular mask bounds ({paste_x}, {paste_y}, {paste_x1}, {paste_y1}) exceed target size ({target_w}, {target_h})")
         else:
             print(f"Warning: Invalid rectangular mask coordinates ({paste_x}, {paste_y}, {paste_x1}, {paste_y1}) - skipping mask paste")
-        print(f"Basic: rectangular mask")
+        if _parsing_cache["call_count"] % 50 == 1:
+            print(f"Basic: rectangular mask")
     
     
     # 保留面部区域的上半部分（用于控制说话区域）
