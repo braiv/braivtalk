@@ -16,7 +16,7 @@ task_0:
  # blur_kernel_ratio: 0.06
  # mouth_vertical_offset: 0.0
  # mouth_scale_factor: 1.0
- # mask_shape: "ultra_wide_ellipse"
+ mask_shape: "ultra_wide_ellipse"
  # mask_height_ratio: 0.85
  # mask_corner_radius: 0.15
  # debug_mouth_mask: true

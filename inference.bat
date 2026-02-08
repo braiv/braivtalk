@@ -56,11 +56,16 @@ if /i "%VERSION%"=="v1.0" (
 REM Ensure app\ is on the import path so `scripts.*` and `braivtalk` resolve.
 set "PYTHONPATH=%CD%\app;%PYTHONPATH%"
 
+REM Detection interval: detect faces every N frames, interpolate the rest.
+REM   1 = every frame (original), 5 = ~5x faster detection with interpolation.
+set "DETECTION_INTERVAL=5"
+
 python app\scripts\inference.py ^
   --inference_config "%CONFIG_PATH%" ^
   --result_dir "%RESULT_DIR%" ^
   --unet_model_path "%UNET_MODEL_PATH%" ^
   --unet_config "%UNET_CONFIG%" ^
-  --version "%VERSION_ARG%"
+  --version "%VERSION_ARG%" ^
+  --detection_interval "%DETECTION_INTERVAL%"
 
 endlocal

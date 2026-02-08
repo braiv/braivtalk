@@ -79,88 +79,196 @@ def read_imgs(img_list):
     return frames
 
 
-def get_landmark_and_bbox(img_list, upperbondrange=0):
+def read_video_frames(video_path):
+    """Read all frames from a video directly into memory via cv2.VideoCapture.
+    Skips the FFmpeg extract-to-disk step for a major speedup on frame loading.
+    Returns (frames, fps).
     """
-    Enhanced face detection that returns both bounding boxes and facial landmarks.
-    Returns face bounding boxes and landmarks for frames with faces, placeholders for frames without.
-    """
-    frames = read_imgs(img_list)
-    batch_size_fa = 1
-    batches = [frames[i : i + batch_size_fa] for i in range(0, len(frames), batch_size_fa)]
-    coords_list = []
-    landmarks_list = []
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
 
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    frames = []
+    print(f"Reading {frame_count} frames directly from video...")
+    for _ in tqdm(range(frame_count), desc="Reading video frames"):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
+
+    cap.release()
+    print(f"Read {len(frames)} frames at {fps:.1f} fps")
+    return frames, fps
+
+
+def _detect_single_frame(frame, upperbondrange, using_yolo):
+    """Run face detection on a single frame. Returns (coord, landmark_points)."""
+    if using_yolo:
+        det_bboxes, det_conf, _det_classid, landmarks = fa.detect(frame)
+
+        if len(det_bboxes) > 0 and len(det_conf) > 0 and det_conf[0] > fa.conf_threshold:
+            bbox = det_bboxes[0]
+            x1, y1, x2, y2 = bbox.astype(int)
+
+            if upperbondrange != 0:
+                y1 = max(0, y1 + upperbondrange)
+
+            img_height, img_width = frame.shape[:2]
+            x1 = max(0, x1)
+            x2 = min(img_width, x2)
+            y1 = max(0, y1)
+            y2 = min(img_height, y2)
+
+            landmark_points = None
+            if len(landmarks) > 0:
+                face_landmarks = landmarks[0]
+                landmark_points = [(float(pt[0]), float(pt[1])) for pt in face_landmarks]
+
+            return (x1, y1, x2, y2), landmark_points
+        else:
+            return coord_placeholder, None
+    else:
+        bbox_result = fa.get_detections_for_batch(np.asarray([frame]))
+        f = bbox_result[0]
+        if f is None:
+            return coord_placeholder, None
+
+        x1, y1, x2, y2 = f
+        if upperbondrange != 0:
+            y1 = max(0, y1 + upperbondrange)
+
+        img_height, img_width = frame.shape[:2]
+        x1 = max(0, x1)
+        x2 = min(img_width, x2)
+        y1 = max(0, y1)
+        y2 = min(img_height, y2)
+
+        return (x1, y1, x2, y2), None
+
+
+def _interpolate_bbox(bbox1, bbox2, alpha):
+    """Linearly interpolate between two bounding boxes."""
+    return (
+        int(round(bbox1[0] + (bbox2[0] - bbox1[0]) * alpha)),
+        int(round(bbox1[1] + (bbox2[1] - bbox1[1]) * alpha)),
+        int(round(bbox1[2] + (bbox2[2] - bbox1[2]) * alpha)),
+        int(round(bbox1[3] + (bbox2[3] - bbox1[3]) * alpha)),
+    )
+
+
+def _interpolate_landmarks(lm1, lm2, alpha):
+    """Linearly interpolate between two sets of landmark points."""
+    if lm1 is None or lm2 is None:
+        return lm1 if alpha < 0.5 else lm2
+    return [
+        (pt1[0] + (pt2[0] - pt1[0]) * alpha, pt1[1] + (pt2[1] - pt1[1]) * alpha)
+        for pt1, pt2 in zip(lm1, lm2)
+    ]
+
+
+def get_landmark_and_bbox(frames, upperbondrange=0, detection_interval=1):
+    """
+    Face detection returning bounding boxes and facial landmarks.
+
+    Args:
+        frames: List of numpy arrays (pre-loaded video frames).
+        upperbondrange: Bounding box shift value.
+        detection_interval: Run detection every N frames (1=every frame).
+            When >1, intermediate frames use linear interpolation for speed.
+
+    Returns:
+        (coords_list, landmarks_list) - bounding boxes and landmarks per frame.
+    """
+    n = len(frames)
     using_yolo = hasattr(fa, "detect")
 
     if upperbondrange != 0:
-        print(f"🔍 Face detection with bbox_shift: {upperbondrange}")
+        print(f"Face detection with bbox_shift: {upperbondrange}")
     else:
-        print("🔍 Face detection with default bbox")
+        print("Face detection with default bbox")
 
     if using_yolo:
-        print("🎯 Using YOLOv8 with facial landmarks for surgical positioning")
+        print("Using YOLOv8 with facial landmarks for surgical positioning")
     else:
-        print("🔧 Using SFD (bounding boxes only)")
+        print("Using SFD (bounding boxes only)")
 
-    for fb in tqdm(batches, desc="Detecting faces"):
-        if using_yolo:
-            for frame in fb:
-                det_bboxes, det_conf, _det_classid, landmarks = fa.detect(frame)
+    if detection_interval > 1:
+        print(f"Sparse detection enabled: every {detection_interval} frames with interpolation")
 
-                if len(det_bboxes) > 0 and len(det_conf) > 0 and det_conf[0] > fa.conf_threshold:
-                    bbox = det_bboxes[0]
-                    x1, y1, x2, y2 = bbox.astype(int)
+    coords_list = [None] * n
+    landmarks_list = [None] * n
+    detected_keyframes = n  # track for summary
 
-                    if upperbondrange != 0:
-                        y1 = max(0, y1 + upperbondrange)
+    if detection_interval <= 1:
+        # Original behavior - detect every frame
+        for i, frame in enumerate(tqdm(frames, desc="Detecting faces")):
+            coord, landmark = _detect_single_frame(frame, upperbondrange, using_yolo)
+            coords_list[i] = coord
+            landmarks_list[i] = landmark
+    else:
+        # Sparse detection with interpolation
+        keyframe_indices = list(range(0, n, detection_interval))
+        if keyframe_indices[-1] != n - 1:
+            keyframe_indices.append(n - 1)
+        detected_keyframes = len(keyframe_indices)
 
-                    img_height, img_width = frame.shape[:2]
-                    x1 = max(0, x1)
-                    x2 = min(img_width, x2)
-                    y1 = max(0, y1)
-                    y2 = min(img_height, y2)
+        # Run detection only on keyframes
+        key_results = {}
+        for idx in tqdm(keyframe_indices, desc=f"Detecting faces (every {detection_interval} frames)"):
+            coord, landmark = _detect_single_frame(frames[idx], upperbondrange, using_yolo)
+            key_results[idx] = (coord, landmark)
 
-                    coords_list += [(x1, y1, x2, y2)]
+        # Interpolate for all frames between keyframes
+        for k in range(len(keyframe_indices) - 1):
+            start_idx = keyframe_indices[k]
+            end_idx = keyframe_indices[k + 1]
 
-                    if len(landmarks) > 0:
-                        face_landmarks = landmarks[0]
-                        landmark_points = [(float(pt[0]), float(pt[1])) for pt in face_landmarks]
-                        landmarks_list += [landmark_points]
-                    else:
-                        landmarks_list += [None]
+            start_coord, start_lm = key_results[start_idx]
+            end_coord, end_lm = key_results[end_idx]
+
+            # Set start keyframe values
+            coords_list[start_idx] = start_coord
+            landmarks_list[start_idx] = start_lm
+
+            start_has_face = start_coord != coord_placeholder
+            end_has_face = end_coord != coord_placeholder
+
+            for idx in range(start_idx + 1, end_idx):
+                alpha = (idx - start_idx) / (end_idx - start_idx)
+                if start_has_face and end_has_face:
+                    # Both keyframes have a face - interpolate smoothly
+                    coords_list[idx] = _interpolate_bbox(start_coord, end_coord, alpha)
+                    landmarks_list[idx] = _interpolate_landmarks(start_lm, end_lm, alpha)
+                elif start_has_face:
+                    # Face leaving - hold last known position
+                    coords_list[idx] = start_coord
+                    landmarks_list[idx] = start_lm
+                elif end_has_face:
+                    # Face entering - hold next known position
+                    coords_list[idx] = end_coord
+                    landmarks_list[idx] = end_lm
                 else:
-                    coords_list += [coord_placeholder]
-                    landmarks_list += [None]
-        else:
-            bbox = fa.get_detections_for_batch(np.asarray(fb))
+                    coords_list[idx] = coord_placeholder
+                    landmarks_list[idx] = None
 
-            for j, f in enumerate(bbox):
-                if f is None:
-                    coords_list += [coord_placeholder]
-                    landmarks_list += [None]
-                    continue
-
-                x1, y1, x2, y2 = f
-                if upperbondrange != 0:
-                    y1 = max(0, y1 + upperbondrange)
-
-                img_height, img_width = fb[j].shape[:2]
-                x1 = max(0, x1)
-                x2 = min(img_width, x2)
-                y1 = max(0, y1)
-                y2 = min(img_height, y2)
-
-                coords_list += [(x1, y1, x2, y2)]
-                landmarks_list += [None]
+        # Set last keyframe
+        last_idx = keyframe_indices[-1]
+        coords_list[last_idx] = key_results[last_idx][0]
+        landmarks_list[last_idx] = key_results[last_idx][1]
 
     print("=" * 80)
-    print(f"✅ Face detection complete: {len(frames)} frames processed")
+    print(f"Face detection complete: {n} frames processed")
+    if detection_interval > 1:
+        print(f"  Keyframes detected: {detected_keyframes}, interpolated: {n - detected_keyframes}")
     face_count = sum(1 for coord in coords_list if coord != coord_placeholder)
     landmark_count = sum(1 for lm in landmarks_list if lm is not None)
-    print(f"📊 Faces detected: {face_count}/{len(frames)} frames")
+    print(f"Faces detected: {face_count}/{n} frames")
     if using_yolo:
-        print(f"🎯 Landmarks extracted: {landmark_count}/{len(frames)} frames")
+        print(f"Landmarks extracted: {landmark_count}/{n} frames")
     print("=" * 80)
 
-    return coords_list, frames, landmarks_list
+    return coords_list, landmarks_list
 

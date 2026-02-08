@@ -21,7 +21,7 @@ from braivtalk.utils.face_parsing import FaceParsing
 from braivtalk.utils.audio_processor import AudioProcessor
 from braivtalk.utils.utils import get_file_type, get_video_fps, datagen_enhanced, load_all_model
 
-from braivtalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder
+from braivtalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, read_video_frames, coord_placeholder
 from braivtalk.utils.parallel_io import ParallelFrameWriter
 
 # Import GPEN-BFR face enhancer (optional)
@@ -189,20 +189,16 @@ def main(args):
             else:
                 output_vid_name = os.path.join(temp_dir, args.output_vid_name)
 
-            # Extract frames from source video
+            # Read frames from source (direct-to-memory for video, skips FFmpeg disk I/O)
             if get_file_type(video_path) == "video":
-                save_dir_full = os.path.join(temp_dir, input_basename)
-                os.makedirs(save_dir_full, exist_ok=True)
-                cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
-                os.system(cmd)
-                input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
-                fps = get_video_fps(video_path)
+                frame_list, fps = read_video_frames(video_path)
             elif get_file_type(video_path) == "image":
-                input_img_list = [video_path]
+                frame_list = [cv2.imread(video_path)]
                 fps = args.fps
             elif os.path.isdir(video_path):
                 input_img_list = glob.glob(os.path.join(video_path, '*.[jpJP][pnPN]*[gG]'))
                 input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+                frame_list = read_imgs(input_img_list)
                 fps = args.fps
             else:
                 raise ValueError(f"{video_path} should be a video file, an image file or a directory of images")
@@ -220,7 +216,7 @@ def main(args):
                 audio_padding_length_right=args.audio_padding_length_right,
             )
 
-            # Preprocess input images
+            # Preprocess: detect faces (or load cached coordinates)
             if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
                 print("Using saved coordinates")
                 with open(crop_coord_save_path, 'rb') as f:
@@ -231,10 +227,11 @@ def main(args):
                     else:
                         coord_list = saved_data
                         landmarks_list = [None] * len(saved_data)
-                frame_list = read_imgs(input_img_list)
             else:
                 print("Extracting landmarks... time-consuming operation")
-                coord_list, frame_list, landmarks_list = get_landmark_and_bbox(input_img_list, bbox_shift)
+                coord_list, landmarks_list = get_landmark_and_bbox(
+                    frame_list, bbox_shift, detection_interval=args.detection_interval
+                )
                 with open(crop_coord_save_path, 'wb') as f:
                     pickle.dump((coord_list, landmarks_list), f)
 
@@ -482,8 +479,6 @@ def main(args):
             shutil.rmtree(result_img_save_path)
             os.remove(temp_vid_path)
 
-            if get_file_type(video_path) == "video":
-                shutil.rmtree(save_dir_full)
             if not args.saved_coord:
                 os.remove(crop_coord_save_path)
 
@@ -508,6 +503,7 @@ if __name__ == "__main__":
     parser.add_argument("--audio_padding_length_left", type=int, default=2, help="Left padding length for audio")
     parser.add_argument("--audio_padding_length_right", type=int, default=2, help="Right padding length for audio")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for inference (conservative optimization)")
+    parser.add_argument("--detection_interval", type=int, default=1, help="Face detection interval: detect every N frames, interpolate the rest (1=every frame, 5=5x faster detection)")
     parser.add_argument("--output_vid_name", type=str, default=None, help="Name of output video file")
     parser.add_argument("--use_saved_coord", action="store_true", help='Use saved coordinates to save time')
     parser.add_argument("--saved_coord", action="store_true", help='Save coordinates for future use')

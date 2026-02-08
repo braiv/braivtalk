@@ -14,10 +14,10 @@ python -m huggingface_hub.commands.huggingface_cli download TMElyralab/MuseTalk 
   --local-dir $CheckpointsDir \
   --include "musetalkV15/musetalk.json" "musetalkV15/unet.pth"
 
-# Download SD VAE weights
+# Download SD VAE weights (safetensors required by newer diffusers, bin kept as fallback)
 python -m huggingface_hub.commands.huggingface_cli download stabilityai/sd-vae-ft-mse \
   --local-dir $CheckpointsDir/sd-vae \
-  --include "config.json" "diffusion_pytorch_model.bin"
+  --include "config.json" "diffusion_pytorch_model.safetensors" "diffusion_pytorch_model.bin"
 
 # Download Whisper weights
 python -m huggingface_hub.commands.huggingface_cli download openai/whisper-tiny \
