@@ -70,6 +70,22 @@ fa = init_face_detector()
 coord_placeholder = (0.0, 0.0, 0.0, 0.0)
 
 
+def _is_coord_placeholder(bbox, placeholder=None):
+    """Safely check if a bbox is the coord_placeholder, handling numpy arrays."""
+    if placeholder is None:
+        placeholder = coord_placeholder
+    if bbox is None:
+        return True
+    try:
+        if hasattr(bbox, '__len__') and hasattr(bbox, '__getitem__'):
+            import numpy as np
+            if isinstance(bbox, np.ndarray):
+                return np.allclose(bbox, placeholder)
+        return tuple(bbox) == tuple(placeholder)
+    except (TypeError, ValueError):
+        return False
+
+
 def read_imgs(img_list):
     frames = []
     print("reading images...")
@@ -272,8 +288,8 @@ def get_landmark_and_bbox(frames, upperbondrange=0, detection_interval=1):
             coords_list[start_idx] = start_coord
             landmarks_list[start_idx] = start_lm
 
-            start_has_face = start_coord != coord_placeholder
-            end_has_face = end_coord != coord_placeholder
+            start_has_face = not _is_coord_placeholder(start_coord)
+            end_has_face = not _is_coord_placeholder(end_coord)
 
             for idx in range(start_idx + 1, end_idx):
                 alpha = (idx - start_idx) / (end_idx - start_idx)
@@ -302,7 +318,7 @@ def get_landmark_and_bbox(frames, upperbondrange=0, detection_interval=1):
     print(f"Face detection complete: {n} frames processed")
     if detection_interval > 1:
         print(f"  Keyframes detected: {detected_keyframes}, interpolated: {n - detected_keyframes}")
-    face_count = sum(1 for coord in coords_list if coord != coord_placeholder)
+    face_count = sum(1 for coord in coords_list if not _is_coord_placeholder(coord))
     landmark_count = sum(1 for lm in landmarks_list if lm is not None)
     print(f"Faces detected: {face_count}/{n} frames")
     if using_yolo:

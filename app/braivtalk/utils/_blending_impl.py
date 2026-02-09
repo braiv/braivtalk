@@ -3,6 +3,48 @@ import numpy as np
 import cv2
 import copy
 
+
+def _color_transfer_lab(source_rgb, target_rgb, mask=None):
+    """Reinhard LAB color transfer: match source color stats to target.
+
+    Adjusts the mean and standard deviation of each LAB channel in *source*
+    to match those of *target*, so the pasted region has the same skin tone,
+    brightness, and color temperature as the surrounding original face.
+
+    Args:
+        source_rgb: The AI-generated face region (uint8 RGB numpy array).
+        target_rgb: The original face region (uint8 RGB numpy array).
+        mask: Optional uint8 grayscale mask; only pixels > 127 contribute
+              to the target statistics (allows ignoring background).
+
+    Returns:
+        Color-corrected source as uint8 RGB numpy array.
+    """
+    if source_rgb.size == 0 or target_rgb.size == 0:
+        return source_rgb
+
+    src_lab = cv2.cvtColor(source_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    tgt_lab = cv2.cvtColor(target_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    if mask is not None and mask.shape[:2] == tgt_lab.shape[:2]:
+        roi = mask > 127
+        if roi.sum() < 10:
+            # Not enough pixels to compute meaningful stats
+            return source_rgb
+        tgt_pixels = tgt_lab[roi]
+    else:
+        tgt_pixels = tgt_lab.reshape(-1, 3)
+
+    src_pixels = src_lab.reshape(-1, 3)
+
+    for ch in range(3):
+        s_mean, s_std = src_pixels[:, ch].mean(), src_pixels[:, ch].std() + 1e-6
+        t_mean, t_std = tgt_pixels[:, ch].mean(), tgt_pixels[:, ch].std() + 1e-6
+        src_lab[:, :, ch] = (src_lab[:, :, ch] - s_mean) * (t_std / s_std) + t_mean
+
+    src_lab = np.clip(src_lab, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(src_lab, cv2.COLOR_LAB2RGB)
+
 # Module-level cache for face parsing results.
 # BiSeNet output barely changes between consecutive frames, so we can
 # safely reuse the mask for several frames and only refresh periodically.
@@ -46,7 +88,7 @@ def face_seg(image, mode="raw", fp=None):
     return seg_image
 
 
-def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode="raw", fp=None, use_elliptical_mask=True, ellipse_padding_factor=0.1, blur_kernel_ratio=0.05, landmarks=None, mouth_vertical_offset=0.0, mouth_scale_factor=1.0, debug_mouth_mask=False, debug_frame_idx=None, debug_output_dir=None, mask_shape="ellipse", mask_height_ratio=0.4, mask_corner_radius=0.2, parsing_interval=1):
+def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode="raw", fp=None, use_elliptical_mask=True, ellipse_padding_factor=0.1, blur_kernel_ratio=0.05, landmarks=None, mouth_vertical_offset=0.0, mouth_scale_factor=1.0, debug_mouth_mask=False, debug_frame_idx=None, debug_output_dir=None, mask_shape="ellipse", mask_height_ratio=0.4, mask_corner_radius=0.2, parsing_interval=1, blend_mode="alpha"):
     """
     将裁剪的面部图像粘贴回原始图像，并进行一些处理。
     Enhanced with landmark-based surgical mouth positioning for improved accuracy.
@@ -70,6 +112,7 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         mask_shape (str): Shape of blending mask ("ellipse", "triangle", "rounded_triangle", "wide_ellipse", "ultra_wide_ellipse")
         mask_height_ratio (float): Height ratio for mask relative to mouth width (0.3-0.8)
         mask_corner_radius (float): Corner radius for rounded shapes (0.0-0.5)
+        blend_mode (str): "alpha" for fast alpha compositing (default) or "poisson" for cv2.seamlessClone
 
     Returns:
         numpy.ndarray: 处理后的图像。
@@ -181,11 +224,44 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         mouth_region_width = max(mouth_region_width, face_width * 0.25)
         mouth_region_height = max(mouth_region_height, face_height * 0.15)
         
-        # Calculate mask bounds centered on actual mouth position
+        # ------------------------------------------------------------------
+        # CHIN-AWARE ASYMMETRIC POSITIONING
+        # ------------------------------------------------------------------
+        # The mask must cover from just above the upper lip down to the chin.
+        # YOLO doesn't provide chin landmarks, but facial proportions give us
+        # a reliable estimate: chin_bottom ~= mouth_center + nose_to_mouth * 1.2
+        #
+        # Instead of centering the ellipse on the mouth (which leaves the chin
+        # exposed), we compute explicit top/bottom boundaries:
+        #   top  = mouth_center - (small portion above upper lip)
+        #   bottom = estimated chin position (+ padding)
+        #
+        # The ellipse center is then shifted downward to match these bounds.
+        # ------------------------------------------------------------------
+        estimated_chin_y = local_mouth_center_y + nose_to_mouth_dist * 1.2
+        # Small overshoot below the chin to guarantee full coverage
+        chin_padding = nose_to_mouth_dist * 0.15
+        desired_bottom = estimated_chin_y + chin_padding
+
+        # Top of the mask: just above the upper lip area
+        # (~40% of nose-to-mouth distance above mouth center)
+        desired_top = local_mouth_center_y - nose_to_mouth_dist * 0.4
+
+        # Use the larger of: shape-based height vs chin-aware height
+        chin_aware_height = desired_bottom - desired_top
+        if chin_aware_height > mouth_region_height:
+            mouth_region_height = chin_aware_height
+
+        # Compute asymmetric mask bounds (biased downward toward chin)
+        # The ellipse center shifts down so bottom reaches the chin.
+        mask_center_y = (desired_top + desired_bottom) / 2
+        # But never shift higher than the original mouth center
+        mask_center_y = max(mask_center_y, local_mouth_center_y)
+
         mask_left = local_mouth_center_x - mouth_region_width / 2
-        mask_top = local_mouth_center_y - mouth_region_height / 2
+        mask_top = mask_center_y - mouth_region_height / 2
         mask_right = local_mouth_center_x + mouth_region_width / 2
-        mask_bottom = local_mouth_center_y + mouth_region_height / 2
+        mask_bottom = mask_center_y + mouth_region_height / 2
         
         # Ensure mask stays within face bounds
         mask_left = max(0, mask_left)
@@ -236,12 +312,12 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
             
             # Top point (mouth center, slightly above)
             top_x = t_center_x
-            top_y = (local_mouth_center_y - mouth_region_height / 2) * scale
+            top_y = mask_top * scale
             
             # Bottom corners
-            left_x = (local_mouth_center_x - mouth_region_width / 2) * scale
-            right_x = (local_mouth_center_x + mouth_region_width / 2) * scale
-            bottom_y = (local_mouth_center_y + mouth_region_height / 2) * scale
+            left_x = mask_left * scale
+            right_x = mask_right * scale
+            bottom_y = mask_bottom * scale
             
             # Draw rounded triangle using multiple shapes
             # Main triangle body
@@ -330,10 +406,25 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
                 if debug_mouth_mask:
                     print(f"Dynamic contour: {len(contour_points)} points, jaw_width={jaw_width:.1f}px, chin_y={chin_y:.1f}px")
         
-        # Apply face parsing mask for additional refinement
+        # Combine ellipse with BiSeNet face-parsing mask.
+        # The ellipse defines the mouth region of interest but may not reach the
+        # chin.  BiSeNet provides a pixel-accurate face boundary (class 1=skin
+        # includes the chin).  We use np.maximum (union) so that BiSeNet can
+        # EXTEND the mask to the chin where the ellipse falls short.
+        # The upper_boundary_ratio step later crops the top of the mask, so
+        # using union here won't bleed into the forehead/eye area.
         mouth_array = np.array(mouth_mask)
         mask_small_array = np.array(mask_small)
-        combined_mask = np.minimum(mouth_array, mask_small_array)
+        # Ensure same size (BiSeNet mask covers face bbox = mouth_mask canvas)
+        if mask_small_array.shape != mouth_array.shape:
+            mask_small_resized = cv2.resize(
+                mask_small_array, (mouth_array.shape[1], mouth_array.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            mask_small_resized = mask_small_array
+
+        combined_mask = np.maximum(mouth_array, mask_small_resized)
         final_face_mask = Image.fromarray(combined_mask)
         
         # Paste the surgical landmark-based mask with bounds checking
@@ -437,12 +528,64 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
     modified_mask_image.paste(mask_image.crop((0, top_boundary, width, height)), (0, top_boundary))  # 粘贴上半部分掩码
     
     
-    # 对掩码进行高斯模糊，使边缘更平滑
-    blur_kernel_size = int(blur_kernel_ratio * ori_shape[0] // 2 * 2) + 1  # 计算模糊核大小
-    mask_array = cv2.GaussianBlur(np.array(modified_mask_image), (blur_kernel_size, blur_kernel_size), 0)  # 高斯模糊
-    #mask_array = np.array(modified_mask_image)
-    mask_image = Image.fromarray(mask_array)  # 将模糊后的掩码转换回 PIL 图像
+    # --- Step 1: Erode top/sides to keep the blend inside the AI face ---
+    mask_np = np.array(modified_mask_image)
+    erode_size = max(3, int(blur_kernel_ratio * ori_shape[0] * 0.4) // 2 * 2 + 1)
+    eroded = cv2.erode(
+        mask_np,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_size, erode_size)),
+        iterations=1,
+    )
+
+    # --- Step 2: Chin overspill -- push bottom edge PAST chin line ---
+    # Find the vertical midpoint of actual mask content (not the canvas).
+    rows_with_content = np.where(mask_np.max(axis=1) > 0)[0]
+    if len(rows_with_content) > 0:
+        content_mid_y = (rows_with_content[0] + rows_with_content[-1]) // 2
+    else:
+        content_mid_y = mask_np.shape[0] // 2
+
+    # Dilate only the lower half of the mask content (chin/jaw area).
+    # Use a vertically-biased kernel that's narrow horizontally (hugs the
+    # face contour) but tall vertically (pushes well past the chin).
+    chin_push = erode_size * 2 + max(6, int(height * 0.05))
+    chin_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (max(3, erode_size // 2), chin_push * 2 + 1)
+    )
+    # Compose: use eroded mask on top, but dilated-from-original on bottom
+    # so the chin gets MORE coverage, not less.
+    bottom_original = mask_np[content_mid_y:, :]
+    bottom_dilated = cv2.dilate(bottom_original, chin_kernel, iterations=1)
+    mask_np = eroded.copy()
+    mask_np[content_mid_y:, :] = np.maximum(eroded[content_mid_y:, :], bottom_dilated)
+
+    # --- Step 3: Distance-transform feathering ---
+    # Instead of a fixed Gaussian blur (which creates a uniform thin feather
+    # zone), use distance-transform to compute each pixel's distance to the
+    # mask edge.  Normalise over a feather_width band to create a smooth
+    # gradient that perfectly follows the contour shape.
+    feather_width = max(15, int(ori_shape[0] * 0.06))  # ~6% of face width
+    # Binary mask for distance transform (foreground = mask > 0)
+    binary = (mask_np > 127).astype(np.uint8)
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5).astype(np.float32)
+    # Normalise: 0 at edge -> 1.0 at feather_width pixels inside
+    alpha = np.clip(dist / feather_width, 0.0, 1.0)
+    # Apply a smooth ease curve (hermite / smoothstep) for natural falloff
+    alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+    mask_array = (alpha * 255).astype(np.uint8)
+    mask_image = Image.fromarray(mask_array)
     
+    # --- Color matching: transfer original face color stats onto AI face ---
+    # This eliminates the visible edge caused by brightness/tone mismatch.
+    try:
+        original_face_crop = np.array(body.crop((x, y, x1, y1)))  # RGB
+        ai_face_arr = np.array(face)  # RGB
+        if original_face_crop.shape[:2] == ai_face_arr.shape[:2]:
+            ai_face_arr = _color_transfer_lab(ai_face_arr, original_face_crop)
+            face = Image.fromarray(ai_face_arr)
+    except Exception:
+        pass  # Silently fall back to unmatched face on error
+
     # 将裁剪的面部图像粘贴回扩展后的面部区域
     face_large.paste(face, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))
     
@@ -451,20 +594,8 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         import os
         os.makedirs(debug_output_dir, exist_ok=True)
         
-        # Save the isolated AI face region
-        face_debug = np.array(face)[:, :, ::-1]  # Convert to BGR for OpenCV
-        cv2.imwrite(f"{debug_output_dir}/frame_{debug_frame_idx:06d}_ai_face.png", face_debug)
-        
-        # Save the mask
-        mask_debug = np.array(mask_image)
-        cv2.imwrite(f"{debug_output_dir}/frame_{debug_frame_idx:06d}_mask.png", mask_debug)
-        
-        # Save the original face region for comparison
-        original_face_region = np.array(body.crop((x, y, x1, y1)))[:, :, ::-1]
-        cv2.imwrite(f"{debug_output_dir}/frame_{debug_frame_idx:06d}_original_face.png", original_face_region)
-        
         # Create a visualization showing the mask overlay
-        # Create a full-size mask for visualization
+        mask_debug = np.array(mask_image)
         original_full = np.array(body)[:, :, ::-1]  # Full original image
         full_mask = np.zeros((original_full.shape[0], original_full.shape[1]), dtype=np.uint8)
         
@@ -498,8 +629,39 @@ def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode=
         
         print(f"Debug saved: frame {debug_frame_idx} -> {debug_output_dir}/")
     
-    body.paste(face_large, crop_box[:2], mask_image)
-    
+    if blend_mode == "poisson":
+        # --- Poisson blending via cv2.seamlessClone ---
+        # Solves gradient-domain equations for mathematically optimal edge
+        # blending.  Slower than alpha compositing but produces the best
+        # results for difficult lighting / color conditions.
+        try:
+            src_bgr = np.array(face_large)[:, :, ::-1]  # RGB -> BGR
+            dst_bgr = np.array(body)[:, :, ::-1]
+            poisson_mask = np.array(mask_image)
+
+            # seamlessClone needs the source to be placed at a center point
+            # in destination coordinates.
+            cx = crop_box[0] + src_bgr.shape[1] // 2
+            cy = crop_box[1] + src_bgr.shape[0] // 2
+
+            # Clamp center to destination bounds
+            dst_h, dst_w = dst_bgr.shape[:2]
+            cx = max(src_bgr.shape[1] // 2, min(cx, dst_w - src_bgr.shape[1] // 2 - 1))
+            cy = max(src_bgr.shape[0] // 2, min(cy, dst_h - src_bgr.shape[0] // 2 - 1))
+
+            result_bgr = cv2.seamlessClone(
+                src_bgr, dst_bgr, poisson_mask, (cx, cy), cv2.NORMAL_CLONE
+            )
+            return result_bgr  # Already BGR, matches expected return format
+        except Exception as e:
+            # Fall back to alpha blending if Poisson fails
+            if _parsing_cache["call_count"] % 50 == 1:
+                print(f"Poisson blending failed, falling back to alpha: {e}")
+            body.paste(face_large, crop_box[:2], mask_image)
+    else:
+        # --- Standard alpha compositing ---
+        body.paste(face_large, crop_box[:2], mask_image)
+
     body = np.array(body)  # 将 PIL 图像转换回 numpy 数组
 
     return body[:, :, ::-1]  # 返回处理后的图像（BGR 转 RGB）

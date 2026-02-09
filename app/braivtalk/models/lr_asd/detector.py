@@ -38,6 +38,18 @@ def _compute_iou(boxA, boxB):
     return inter / union if union > 0 else 0.0
 
 
+def _is_placeholder(bbox, placeholder=(0, 0, 0, 0)):
+    """Safely check if a bbox is a placeholder, handling numpy arrays."""
+    if bbox is None:
+        return True
+    try:
+        if isinstance(bbox, np.ndarray):
+            return np.allclose(bbox, placeholder)
+        return tuple(bbox) == placeholder
+    except (TypeError, ValueError):
+        return False
+
+
 def _nms_faces(bboxes, confs, conf_threshold, iou_threshold=0.5):
     """
     Per-frame Non-Maximum Suppression: keep only one detection per face.
@@ -112,6 +124,8 @@ class ActiveSpeakerDetector:
         audio_path: str,
         fps: float = 25.0,
         threshold: float = 0.0,
+        hold_seconds: float = 0.3,
+        gap_fill_seconds: float = 0.4,
     ) -> Tuple[List[float], List[bool]]:
         """
         Determine which frames contain an actively speaking face.
@@ -234,17 +248,49 @@ class ActiveSpeakerDetector:
         # --- 5. Map ASD scores back to original frame count ---------------
         # ASD produces one score per video_len frame; we need n_frames scores.
         per_frame_scores = self._map_scores_to_frames(avg_scores, n_frames, fps)
-        speaking_mask = [s > threshold for s in per_frame_scores]
+        raw_mask = [s > threshold for s in per_frame_scores]
 
-        speaking_count = sum(speaking_mask)
-        silent_count = n_frames - speaking_count
+        # --- 6. Temporal smoothing -----------------------------------------
+        # Raw per-frame thresholding causes flicker: the AI mouth appears and
+        # disappears between words.  We apply two passes:
+        #   a) Hold: once speaking starts, keep it for at least `hold_seconds`
+        #      even if scores dip below threshold.
+        #   b) Gap-fill: short silent gaps (< `gap_fill_seconds`) between two
+        #      speaking segments are filled in as speaking.
+        # Values are configurable via --asd_hold_seconds / --asd_gap_fill_seconds.
+        hold_frames = int(round(hold_seconds * fps))
+        gap_fill_frames = int(round(gap_fill_seconds * fps))
+
+        # Pass (a): Hold -- extend every speaking onset by hold_frames
+        speaking_mask = list(raw_mask)
+        frames_since_last_speaking = hold_frames + 1  # start as "not holding"
+        for i in range(n_frames):
+            if raw_mask[i]:
+                frames_since_last_speaking = 0
+                speaking_mask[i] = True
+            else:
+                frames_since_last_speaking += 1
+                if frames_since_last_speaking <= hold_frames:
+                    speaking_mask[i] = True
+
+        # Pass (b): Gap-fill -- if a short silent gap is between two speaking
+        # segments, fill it in.
+        speaking_mask = self._fill_short_gaps(speaking_mask, gap_fill_frames)
+
+        raw_speaking = sum(raw_mask)
+        smoothed_speaking = sum(speaking_mask)
         print("=" * 60)
         print(f"[ASD] RESULTS: {n_frames} total frames")
-        print(f"[ASD]   Speaking:  {speaking_count} frames "
-              f"({100 * speaking_count / n_frames:.1f}%)")
-        print(f"[ASD]   Silent:    {silent_count} frames "
+        print(f"[ASD]   Speaking (raw):      {raw_speaking} frames "
+              f"({100 * raw_speaking / n_frames:.1f}%)")
+        print(f"[ASD]   Speaking (smoothed): {smoothed_speaking} frames "
+              f"({100 * smoothed_speaking / n_frames:.1f}%)")
+        silent_count = n_frames - smoothed_speaking
+        print(f"[ASD]   Silent:              {silent_count} frames "
               f"({100 * silent_count / n_frames:.1f}%)")
-        print(f"[ASD]   Threshold: {threshold}")
+        print(f"[ASD]   Threshold: {threshold}, "
+              f"hold: {hold_seconds}s ({hold_frames}f), "
+              f"gap-fill: {gap_fill_seconds}s ({gap_fill_frames}f)")
 
         # Show score distribution for debugging
         scores_arr = np.array(per_frame_scores)
@@ -446,6 +492,335 @@ class ActiveSpeakerDetector:
             )
 
         return winner_bbox
+
+    # ------------------------------------------------------------------
+    # Dynamic per-frame active speaker detection
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def get_per_frame_active_speaker(
+        self,
+        frames: List[np.ndarray],
+        audio_path: str,
+        face_detector,
+        fps: float = 25.0,
+        detection_interval: int = 5,
+        conf_threshold: float = 0.5,
+        threshold: float = 0.0,
+        hold_seconds: float = 0.3,
+        gap_fill_seconds: float = 0.4,
+        window_seconds: float = 6.0,
+        hop_seconds: float = 3.0,
+        debug_dir: str = None,
+    ) -> Tuple[List["np.ndarray | None"], List[bool]]:
+        """
+        Identify the active speaker per frame across the whole video.
+
+        Unlike ``select_speaker_face`` which picks ONE speaker for the whole
+        video, this method dynamically assigns the active speaker per frame,
+        so lip-sync follows whoever is currently speaking.
+
+        Approach:
+        1. Detect ALL faces densely across the video
+        2. Build face tracks (group same person across frames via IOU)
+        3. Slide ASD scoring windows across the video, scoring each track
+        4. For each frame, the track with the highest speaking score wins
+        5. Apply temporal smoothing to prevent rapid switching
+
+        Returns
+        -------
+        speaker_bboxes : list[np.ndarray | None]
+            Per-frame bbox ``[x1, y1, x2, y2]`` of the active speaker,
+            or ``None`` for frames where nobody is speaking.
+        speaking_mask : list[bool]
+            ``True`` where someone is speaking.
+        """
+        n_frames = len(frames)
+        MODEL_FPS = 25.0
+        coord_placeholder = (0, 0, 0, 0)
+
+        print(f"[ASD-DYN] Starting dynamic per-frame speaker detection "
+              f"({n_frames} frames, {fps:.1f} fps)")
+
+        if debug_dir is not None:
+            os.makedirs(debug_dir, exist_ok=True)
+
+        # --- 1. Extract MFCC for the full audio (one-time) ---------------
+        audio_features = self._extract_mfcc(audio_path)
+        if audio_features is None:
+            print("[ASD-DYN] WARNING: Could not extract audio -- "
+                  "marking all frames as speaking (no speaker switch)")
+            return [None] * n_frames, [True] * n_frames
+
+        # --- 2. Detect ALL faces densely across the video ----------------
+        print(f"[ASD-DYN] Detecting faces every {detection_interval} frames...")
+        all_detections = []  # (abs_frame_idx, bbox, conf)
+        face_landmarks_map = {}  # abs_frame_idx -> {bbox_key: landmarks}
+
+        for fi in range(0, n_frames, detection_interval):
+            det_bboxes, det_conf, _, det_landmarks = face_detector.detect(frames[fi])
+            if len(det_bboxes) == 0:
+                continue
+            kept = _nms_faces(det_bboxes, det_conf, conf_threshold, iou_threshold=0.5)
+            for idx in kept:
+                bbox = det_bboxes[idx].astype(int)
+                all_detections.append((fi, bbox, float(det_conf[idx])))
+                # Store landmarks keyed by frame + bbox center
+                if len(det_landmarks) > idx:
+                    key = (fi, int(bbox[0] + bbox[2]) // 2, int(bbox[1] + bbox[3]) // 2)
+                    face_landmarks_map[key] = det_landmarks[idx]
+
+        if not all_detections:
+            print("[ASD-DYN] No faces detected in the video")
+            return [None] * n_frames, [False] * n_frames
+
+        # --- 3. Build face tracks ----------------------------------------
+        tracks = self._build_face_tracks(all_detections, iou_threshold=0.4)
+        tracks = self._merge_similar_tracks(tracks, iou_threshold=0.5)
+        # Filter short tracks (noise)
+        min_track_len = max(3, int(fps / detection_interval))
+        tracks = [t for t in tracks if len(t) >= min_track_len]
+
+        if not tracks:
+            print("[ASD-DYN] No sustained face tracks found")
+            return [None] * n_frames, [False] * n_frames
+
+        print(f"[ASD-DYN] Built {len(tracks)} face tracks "
+              f"(min {min_track_len} detections)")
+
+        # For each track, compute its average bbox (for logging / debug)
+        track_avg_bboxes = []
+        for track in tracks:
+            avg_bbox = np.mean([d[1] for d in track], axis=0).astype(int)
+            track_avg_bboxes.append(avg_bbox)
+            area = (avg_bbox[2] - avg_bbox[0]) * (avg_bbox[3] - avg_bbox[1])
+            print(f"[ASD-DYN]   Track: {len(track)} dets, "
+                  f"bbox~{avg_bbox.tolist()}, area={area}")
+
+        # --- 4. Build per-frame bbox for each track (with interpolation) --
+        track_per_frame_bboxes = []
+        for track in tracks:
+            bboxes = [None] * n_frames
+            for (fidx, bbox, _conf) in track:
+                bboxes[fidx] = bbox
+            bboxes = self._fill_track_gaps(bboxes)
+            # Convert None->placeholder for bboxes that couldn't be filled
+            bboxes = [b if b is not None else coord_placeholder for b in bboxes]
+            # Linear interpolation between detected frames
+            bboxes = self._interpolate_bboxes(bboxes, coord_placeholder)
+            track_per_frame_bboxes.append(bboxes)
+
+        # --- 5. Score each track with ASD in sliding windows -------------
+        window_frames = int(window_seconds * fps)
+        hop_frames = int(hop_seconds * fps)
+
+        # Per-track accumulator: sum of scores and count per frame
+        track_score_sum = [np.zeros(n_frames) for _ in range(len(tracks))]
+        track_score_count = [np.zeros(n_frames) for _ in range(len(tracks))]
+
+        n_windows = 0
+        for win_start in range(0, n_frames, hop_frames):
+            win_end = min(win_start + window_frames, n_frames)
+            if win_end - win_start < int(fps):
+                continue  # Window too short
+            n_windows += 1
+
+            # Audio slice for this window
+            audio_start = int(win_start / fps * 100)
+            audio_end = int(win_end / fps * 100)
+            window_audio = audio_features[audio_start:audio_end]
+            if window_audio.shape[0] == 0:
+                continue
+
+            sample_frames = frames[win_start:win_end]
+
+            # Score each track in this window
+            for ti, track in enumerate(tracks):
+                # Build local bboxes for this window
+                local_bboxes = track_per_frame_bboxes[ti][win_start:win_end]
+                # Check if track has enough presence in this window
+                valid = sum(1 for b in local_bboxes if not _is_placeholder(b))
+                if valid < len(local_bboxes) * 0.3:
+                    continue  # Track barely visible in this window
+
+                # Build a mini-track for _score_track
+                mini_track = []
+                for li, bbox in enumerate(local_bboxes):
+                    if not _is_placeholder(bbox):
+                        mini_track.append((li, np.array(bbox), 1.0))
+
+                if len(mini_track) < 3:
+                    continue
+
+                score = self._score_track(
+                    mini_track, sample_frames, window_audio, fps, MODEL_FPS,
+                )
+                if score is None:
+                    continue
+
+                # Assign this score to all frames in the window
+                for fi in range(win_start, win_end):
+                    track_score_sum[ti][fi] += score
+                    track_score_count[ti][fi] += 1
+
+        print(f"[ASD-DYN] Scored {len(tracks)} tracks across {n_windows} windows")
+
+        # --- 6. Compute average score per track per frame ----------------
+        track_avg_scores = []
+        for ti in range(len(tracks)):
+            avg = np.zeros(n_frames)
+            for fi in range(n_frames):
+                if track_score_count[ti][fi] > 0:
+                    avg[fi] = track_score_sum[ti][fi] / track_score_count[ti][fi]
+                else:
+                    avg[fi] = -10.0  # No data -> treat as strongly silent
+            track_avg_scores.append(avg)
+            print(f"[ASD-DYN]   Track {ti}: avg_score={avg[avg > -10].mean():.2f}, "
+                  f"max={avg.max():.2f}, "
+                  f"frames_above_threshold={int((avg > threshold).sum())}")
+
+        # --- 7. Per frame, pick the track with the highest score ---------
+        speaker_bboxes: List["np.ndarray | None"] = [None] * n_frames
+        raw_mask = [False] * n_frames
+
+        for fi in range(n_frames):
+            best_track = -1
+            best_score = threshold
+            for ti in range(len(tracks)):
+                s = track_avg_scores[ti][fi]
+                if s > best_score and not _is_placeholder(track_per_frame_bboxes[ti][fi]):
+                    best_score = s
+                    best_track = ti
+
+            if best_track >= 0:
+                bbox = track_per_frame_bboxes[best_track][fi]
+                speaker_bboxes[fi] = np.array(bbox)
+                raw_mask[fi] = True
+
+        # --- 8. Temporal smoothing ---------------------------------------
+        hold_frames = int(round(hold_seconds * fps))
+        gap_fill_frames = int(round(gap_fill_seconds * fps))
+
+        speaking_mask = list(raw_mask)
+        frames_since_speaking = hold_frames + 1
+        last_speaker_bbox = None
+        for i in range(n_frames):
+            if raw_mask[i]:
+                frames_since_speaking = 0
+                last_speaker_bbox = speaker_bboxes[i]
+            else:
+                frames_since_speaking += 1
+                if frames_since_speaking <= hold_frames and last_speaker_bbox is not None:
+                    speaking_mask[i] = True
+                    if speaker_bboxes[i] is None:
+                        speaker_bboxes[i] = last_speaker_bbox
+
+        speaking_mask = self._fill_short_gaps(speaking_mask, gap_fill_frames)
+
+        # Fill bboxes for ALL frames (not just speaking ones) so every frame
+        # has a face target.  The speaking_mask separately controls whether
+        # lip-sync inference runs; the bbox just tells YOLO which face to
+        # track.  Forward-fill first, then backward-fill any leading gap.
+        last_known = None
+        for i in range(n_frames):
+            if speaker_bboxes[i] is not None:
+                last_known = speaker_bboxes[i]
+            elif last_known is not None:
+                speaker_bboxes[i] = last_known
+        # Backward-fill any frames before the first detection
+        first_known = None
+        for i in range(n_frames - 1, -1, -1):
+            if speaker_bboxes[i] is not None and first_known is None:
+                first_known = speaker_bboxes[i]
+            elif speaker_bboxes[i] is None and first_known is not None:
+                speaker_bboxes[i] = first_known
+
+        # --- 9. Log results ----------------------------------------------
+        speaking_count = sum(speaking_mask)
+        silent_count = n_frames - speaking_count
+        print("=" * 60)
+        print(f"[ASD-DYN] RESULTS: {n_frames} total frames")
+        print(f"[ASD-DYN]   Speaking: {speaking_count} frames "
+              f"({100 * speaking_count / n_frames:.1f}%)")
+        print(f"[ASD-DYN]   Silent:   {silent_count} frames "
+              f"({100 * silent_count / n_frames:.1f}%)")
+
+        # Count per-track frame assignments
+        track_frame_counts = [0] * len(tracks)
+        for fi in range(n_frames):
+            if speaker_bboxes[fi] is not None:
+                for ti in range(len(tracks)):
+                    bbox = track_per_frame_bboxes[ti][fi]
+                    if not _is_placeholder(bbox) and np.allclose(speaker_bboxes[fi], bbox):
+                        track_frame_counts[ti] += 1
+                        break
+        for ti in range(len(tracks)):
+            print(f"[ASD-DYN]   Track {ti}: assigned {track_frame_counts[ti]} frames")
+        print("=" * 60)
+
+        # --- 10. Save debug image ----------------------------------------
+        if debug_dir is not None and len(tracks) > 0:
+            # Save a debug image at 50% point
+            mid = n_frames // 2
+            vis = frames[mid].copy()
+            for ti in range(len(tracks)):
+                bbox = track_per_frame_bboxes[ti][mid]
+                if _is_placeholder(bbox):
+                    continue
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                is_speaker = (speaker_bboxes[mid] is not None and
+                              np.allclose(speaker_bboxes[mid], bbox))
+                color = (0, 220, 0) if is_speaker else (0, 0, 220)
+                thickness = 4 if is_speaker else 2
+                cv2.rectangle(vis, (x1, y1), (x2, y2), color, thickness)
+                score = track_avg_scores[ti][mid]
+                label = f"Track {ti}: {score:+.2f}"
+                if is_speaker:
+                    label = "SPEAKER " + label
+                cv2.putText(vis, label, (x1, max(y1 - 10, 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.imwrite(os.path.join(debug_dir, f"asd_dynamic_frame{mid:06d}.png"), vis)
+
+        return speaker_bboxes, speaking_mask
+
+    @staticmethod
+    def _interpolate_bboxes(bboxes, placeholder):
+        """Linear interpolation of bboxes between detected frames."""
+        n = len(bboxes)
+        result = list(bboxes)
+
+        # Find segments of placeholders and interpolate
+        i = 0
+        while i < n:
+            if _is_placeholder(result[i], placeholder):
+                # Find the start and end of this gap
+                gap_start = i
+                while i < n and _is_placeholder(result[i], placeholder):
+                    i += 1
+                gap_end = i
+
+                # Get bounding bboxes
+                before = result[gap_start - 1] if gap_start > 0 and not _is_placeholder(result[gap_start - 1], placeholder) else None
+                after = result[gap_end] if gap_end < n and not _is_placeholder(result[gap_end], placeholder) else None
+
+                if before is not None and after is not None:
+                    # Interpolate
+                    before = np.array(before, dtype=float)
+                    after = np.array(after, dtype=float)
+                    gap_len = gap_end - gap_start
+                    for j in range(gap_len):
+                        t = (j + 1) / (gap_len + 1)
+                        interp = before * (1 - t) + after * t
+                        result[gap_start + j] = tuple(interp.astype(int))
+                elif before is not None:
+                    for j in range(gap_start, gap_end):
+                        result[j] = before
+                elif after is not None:
+                    for j in range(gap_start, gap_end):
+                        result[j] = after
+            else:
+                i += 1
+        return result
 
     # ------------------------------------------------------------------
     # Debug visualization helpers
@@ -756,7 +1131,7 @@ class ActiveSpeakerDetector:
         coord_placeholder = (0.0, 0.0, 0.0, 0.0)
         crops = []
         for frame, bbox in zip(frames, face_bboxes):
-            if bbox == coord_placeholder or bbox is None:
+            if _is_placeholder(bbox):
                 crops.append(np.zeros((112, 112), dtype=np.uint8))
                 continue
 
@@ -779,6 +1154,27 @@ class ActiveSpeakerDetector:
             crops.append(face)
 
         return np.array(crops)
+
+    @staticmethod
+    def _fill_short_gaps(mask: List[bool], max_gap: int) -> List[bool]:
+        """Fill silent gaps shorter than *max_gap* frames between speaking segments."""
+        result = list(mask)
+        n = len(result)
+        i = 0
+        while i < n:
+            if not result[i]:
+                # Start of a silent gap
+                gap_start = i
+                while i < n and not result[i]:
+                    i += 1
+                gap_len = i - gap_start
+                # If this gap is short AND bordered by speaking on both sides, fill it
+                if gap_len <= max_gap and gap_start > 0 and i < n:
+                    for j in range(gap_start, i):
+                        result[j] = True
+            else:
+                i += 1
+        return result
 
     @staticmethod
     def _map_scores_to_frames(

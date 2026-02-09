@@ -64,7 +64,14 @@ def datagen_enhanced(
         idx = (i + delay_frame) % len(coord_list_cycle)
         coord = coord_list_cycle[idx]
 
-        if coord == coord_placeholder:
+        # Safe comparison that handles numpy arrays
+        import numpy as np
+        is_placeholder = (
+            (isinstance(coord, np.ndarray) and np.allclose(coord, coord_placeholder))
+            or (not isinstance(coord, np.ndarray) and coord == coord_placeholder)
+            if coord is not None else True
+        )
+        if is_placeholder:
             original_idx = idx % len(frame_list_cycle)
             passthrough_frame = frame_list_cycle[original_idx]
 

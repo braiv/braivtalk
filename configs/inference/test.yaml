@@ -21,6 +21,7 @@ task_0:
  # mask_corner_radius: 0.2
  debug_mouth_mask: true
  # parsing_interval: 5
+ # blend_mode: "poisson"          # "alpha" (fast, default) or "poisson" (cv2.seamlessClone, slower but best quality)
  #
  # # YOLO face-selection params
  # yolo_conf_threshold: 0.5
@@ -35,3 +36,5 @@ task_0:
  enable_asd: true
  # asd_threshold: 0.0
  # asd_model_path: "models/lr_asd/pretrain_AVA.model"
+ # asd_hold_seconds: 0.3        # Hold 'speaking' for N seconds after last speaking frame (0.0 = no hold)
+ # asd_gap_fill_seconds: 0.4    # Fill silent gaps shorter than N seconds (0.0 = no gap fill)
