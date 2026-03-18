@@ -1,8 +1,8 @@
 from facefusion import state_manager
-from facefusion.filesystem import get_file_name, is_video, resolve_file_paths
+from facefusion.filesystem import is_video
 from facefusion.jobs import job_store
 from facefusion.normalizer import normalize_fps, normalize_space
-from facefusion.processors.core import get_processors_modules
+from facefusion.processors.core import get_available_processors, get_processors_modules
 from facefusion.types import ApplyStateItem, Args
 from facefusion.vision import detect_video_fps
 
@@ -59,7 +59,7 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 		output_video_fps = normalize_fps(args.get('output_video_fps')) or detect_video_fps(args.get('target_path'))
 		apply_state_item('output_video_fps', output_video_fps)
 
-	available_processors = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
+	available_processors = get_available_processors()
 	apply_state_item('processors', args.get('processors'))
 
 	for processor_module in get_processors_modules(available_processors):

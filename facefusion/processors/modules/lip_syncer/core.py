@@ -125,16 +125,6 @@ def create_static_model_set(download_scope : DownloadScope) -> ModelSet:
 					'url': resolve_download_url('models-3.0.0', 'live_portrait_motion_extractor.hash'),
 					'path': resolve_relative_path('../.assets/models/live_portrait_motion_extractor.hash')
 				},
-				'eye_retargeter':
-				{
-					'url': resolve_download_url('models-3.0.0', 'live_portrait_eye_retargeter.hash'),
-					'path': resolve_relative_path('../.assets/models/live_portrait_eye_retargeter.hash')
-				},
-				'lip_retargeter':
-				{
-					'url': resolve_download_url('models-3.0.0', 'live_portrait_lip_retargeter.hash'),
-					'path': resolve_relative_path('../.assets/models/live_portrait_lip_retargeter.hash')
-				},
 				'stitcher':
 				{
 					'url': resolve_download_url('models-3.0.0', 'live_portrait_stitcher.hash'),
@@ -157,16 +147,6 @@ def create_static_model_set(download_scope : DownloadScope) -> ModelSet:
 				{
 					'url': resolve_download_url('models-3.0.0', 'live_portrait_motion_extractor.onnx'),
 					'path': resolve_relative_path('../.assets/models/live_portrait_motion_extractor.onnx')
-				},
-				'eye_retargeter':
-				{
-					'url': resolve_download_url('models-3.0.0', 'live_portrait_eye_retargeter.onnx'),
-					'path': resolve_relative_path('../.assets/models/live_portrait_eye_retargeter.onnx')
-				},
-				'lip_retargeter':
-				{
-					'url': resolve_download_url('models-3.0.0', 'live_portrait_lip_retargeter.onnx'),
-					'path': resolve_relative_path('../.assets/models/live_portrait_lip_retargeter.onnx')
 				},
 				'stitcher':
 				{

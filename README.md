@@ -3,6 +3,16 @@ FaceFusion
 
 > Industry leading face manipulation platform.
 
+Current Product Focus
+---------------------
+
+This fork is intentionally reduced to a smaller baseline centered on:
+
+- `lip_syncer`, including the Pure Motion LivePortrait refinement path
+- `face_enhancer`, including models such as CodeFormer, GFPGAN and GPEN
+
+The broader face-swap, editor, debugger, colorizer, enhancer and background-removal processors from upstream FaceFusion are not part of the supported surface in this repo anymore.
+
 [![Build Status](https://img.shields.io/github/actions/workflow/status/facefusion/facefusion/ci.yml.svg?branch=master)](https://github.com/facefusion/facefusion/actions?query=workflow:ci)
 [![Coverage Status](https://img.shields.io/coveralls/facefusion/facefusion.svg)](https://coveralls.io/r/facefusion/facefusion)
 ![License](https://img.shields.io/badge/license-OpenRAIL--AS-green)

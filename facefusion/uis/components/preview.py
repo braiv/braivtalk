@@ -90,47 +90,16 @@ def listen() -> None:
 
 	for ui_component in get_ui_components(
 	[
-		'background_remover_fill_color_red_number',
-		'background_remover_fill_color_green_number',
-		'background_remover_fill_color_blue_number',
-		'background_remover_fill_color_alpha_number',
-		'background_remover_despill_color_red_number',
-		'background_remover_despill_color_green_number',
-		'background_remover_despill_color_blue_number',
-		'background_remover_despill_color_alpha_number',
-		'face_debugger_items_checkbox_group',
-		'frame_colorizer_size_dropdown',
 		'face_mask_types_checkbox_group',
 		'face_mask_areas_checkbox_group',
-		'face_mask_regions_checkbox_group',
-		'expression_restorer_areas_checkbox_group'
+		'face_mask_regions_checkbox_group'
 	]):
 		ui_component.change(update_preview_image, inputs = [ preview_mode_dropdown, preview_resolution_dropdown, preview_frame_slider ], outputs = PREVIEW_IMAGE)
 
 	for ui_component in get_ui_components(
 	[
-		'age_modifier_direction_slider',
-		'deep_swapper_morph_slider',
-		'expression_restorer_factor_slider',
-		'face_editor_eyebrow_direction_slider',
-		'face_editor_eye_gaze_horizontal_slider',
-		'face_editor_eye_gaze_vertical_slider',
-		'face_editor_eye_open_ratio_slider',
-		'face_editor_lip_open_ratio_slider',
-		'face_editor_mouth_grim_slider',
-		'face_editor_mouth_pout_slider',
-		'face_editor_mouth_purse_slider',
-		'face_editor_mouth_smile_slider',
-		'face_editor_mouth_position_horizontal_slider',
-		'face_editor_mouth_position_vertical_slider',
-		'face_editor_head_pitch_slider',
-		'face_editor_head_yaw_slider',
-		'face_editor_head_roll_slider',
 		'face_enhancer_blend_slider',
 		'face_enhancer_weight_slider',
-		'face_swapper_weight_slider',
-		'frame_colorizer_blend_slider',
-		'frame_enhancer_blend_slider',
 		'lip_syncer_pure_motion_slider',
 		'lip_syncer_weight_slider',
 		'reference_face_distance_slider',
@@ -146,17 +115,8 @@ def listen() -> None:
 
 	for ui_component in get_ui_components(
 	[
-		'age_modifier_model_dropdown',
-		'background_remover_model_dropdown',
-		'deep_swapper_model_dropdown',
-		'expression_restorer_model_dropdown',
 		'processors_checkbox_group',
-		'face_editor_model_dropdown',
 		'face_enhancer_model_dropdown',
-		'face_swapper_model_dropdown',
-		'face_swapper_pixel_boost_dropdown',
-		'frame_colorizer_model_dropdown',
-		'frame_enhancer_model_dropdown',
 		'lip_syncer_model_dropdown',
 		'face_selector_mode_dropdown',
 		'face_selector_order_dropdown',
@@ -301,7 +261,7 @@ def extract_crop_frame(vision_frame : VisionFrame, face : Face) -> Optional[Visi
 
 
 def prepare_output_frame(target_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, temp_vision_mask : Mask) -> VisionFrame:
-	temp_vision_mask = temp_vision_mask.clip(state_manager.get_item('background_remover_fill_color')[-1], 255)
+	temp_vision_mask = temp_vision_mask.clip(0, 255)
 	temp_vision_frame = merge_vision_mask(temp_vision_frame, temp_vision_mask)
 	temp_vision_frame = cv2.resize(temp_vision_frame, target_vision_frame.shape[1::-1])
 	return temp_vision_frame

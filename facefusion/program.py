@@ -9,7 +9,7 @@ from facefusion.execution import get_available_execution_providers
 from facefusion.ffmpeg import get_available_encoder_set
 from facefusion.filesystem import get_file_name, resolve_file_paths
 from facefusion.jobs import job_store
-from facefusion.processors.core import get_processors_modules
+from facefusion.processors.core import get_available_processors, get_processors_modules
 from facefusion.sanitizer import sanitize_int_range, sanitize_job_id
 
 
@@ -186,9 +186,9 @@ def create_output_creation_program() -> ArgumentParser:
 
 def create_processors_program() -> ArgumentParser:
 	program = ArgumentParser(add_help = False)
-	available_processors = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
+	available_processors = get_available_processors()
 	group_processors = program.add_argument_group('processors')
-	group_processors.add_argument('--processors', help = translator.get('help.processors').format(choices = ', '.join(available_processors)), default = config.get_str_list('processors', 'processors', 'face_swapper'), choices = available_processors, nargs = '+', metavar = 'PROCESSORS')
+	group_processors.add_argument('--processors', help = translator.get('help.processors').format(choices = ', '.join(available_processors)), default = config.get_str_list('processors', 'processors', 'lip_syncer face_enhancer'), choices = available_processors, nargs = '+', metavar = 'PROCESSORS')
 	job_store.register_step_keys([ 'processors' ])
 	for processor_module in get_processors_modules(available_processors):
 		processor_module.register_args(program)

@@ -17,6 +17,7 @@ PROCESSORS_METHODS =\
 	'post_process',
 	'process_frame'
 ]
+AVAILABLE_PROCESSORS = [ 'lip_syncer', 'face_enhancer' ]
 
 
 def load_processor_module(processor : str) -> Any:
@@ -33,6 +34,10 @@ def load_processor_module(processor : str) -> Any:
 		logger.error(translator.get('processor_not_implemented').format(processor = processor), __name__)
 		hard_exit(1)
 	return processor_module
+
+
+def get_available_processors() -> List[str]:
+	return AVAILABLE_PROCESSORS.copy()
 
 
 def get_processors_modules(processors : List[str]) -> List[ModuleType]:

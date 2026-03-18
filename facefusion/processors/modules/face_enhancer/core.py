@@ -382,8 +382,8 @@ def forward(crop_vision_frame : VisionFrame, face_enhancer_weight : FaceEnhancer
 def has_weight_input() -> bool:
 	face_enhancer = get_inference_pool().get('face_enhancer')
 
-	for deep_swapper_input in face_enhancer.get_inputs():
-		if deep_swapper_input.name == 'weight':
+	for face_enhancer_input in face_enhancer.get_inputs():
+		if face_enhancer_input.name == 'weight':
 			return True
 
 	return False

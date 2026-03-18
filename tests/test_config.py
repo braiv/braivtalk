@@ -83,3 +83,16 @@ def test_get_int_list() -> None:
 	assert config.get_int_list('int_list', 'unset', '3 2 1') == [ 3, 2, 1 ]
 	assert config.get_int_list('int_list', 'unset') is None
 	assert config.get_int_list('int_list', 'invalid') is None
+
+
+def test_saveable_processors_options() -> None:
+	assert config.SAVEABLE_CONFIG_OPTIONS.get('processors') ==\
+	[
+		'processors',
+		'face_enhancer_model',
+		'face_enhancer_blend',
+		'face_enhancer_weight',
+		'lip_syncer_model',
+		'lip_syncer_pure_motion',
+		'lip_syncer_weight'
+	]

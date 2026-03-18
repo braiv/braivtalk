@@ -38,3 +38,10 @@ def test_sync_lip_to_video() -> None:
 
 	assert subprocess.run(commands).returncode == 0
 	assert is_test_output_file('test_sync_lip_to_video.mp4') is True
+
+
+def test_sync_lip_to_image_with_pure_motion() -> None:
+	commands = [ sys.executable, 'facefusion.py', 'headless-run', '--jobs-path', get_test_jobs_directory(), '--processors', 'lip_syncer', '-s', get_test_example_file('source.mp3'), '-t', get_test_example_file('target-240p.jpg'), '-o', get_test_output_file('test_sync_lip_to_image_with_pure_motion.jpg'), '--lip-syncer-pure-motion', '1.0' ]
+
+	assert subprocess.run(commands).returncode == 0
+	assert is_test_output_file('test_sync_lip_to_image_with_pure_motion.jpg') is True
