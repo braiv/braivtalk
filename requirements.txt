@@ -1,33 +1,8 @@
-torch==2.2.0
-torchvision==0.17.0
-torchaudio==2.2.0
---extra-index-url https://download.pytorch.org/whl/cu118
-diffusers==0.32.2
-transformers==4.48.0
-numpy==1.26.4
-accelerate==0.28.0
-librosa==0.11.0
-soundfile==0.12.1
-opencv-python==4.9.0.80
-einops==0.8.1
-huggingface-hub[cli]==0.30.2
-omegaconf==2.3.0
-Pillow>=10.0.0
-tqdm>=4.0.0
-gdown
-requests
-
-# LR-ASD Active Speaker Detection Dependencies
-python_speech_features>=0.6
-
-# GPEN-BFR Face Enhancement Dependencies (ONNX-based)
-onnx>=1.17.0
-onnxruntime; platform_system == "Darwin"
-onnxruntime-gpu; platform_system != "Darwin"  # GPU acceleration for GPEN-BFR enhancement (Linux/Windows)
-scipy>=1.15.0
-psutil>=7.0.0
-
-# Note:
-# - macOS does not ship `onnxruntime-gpu` wheels, so we use CPU `onnxruntime`.
-# - On Linux/Windows with CUDA, `onnxruntime-gpu` is preferred.
-
+gradio-rangeslider==0.0.8
+gradio==5.44.1
+numpy==2.2.1
+onnx==1.20.1
+onnxruntime==1.24.3
+opencv-python==4.13.0.92
+tqdm==4.67.3
+scipy==1.17.1
