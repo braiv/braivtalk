@@ -9,7 +9,10 @@ LOCALES : Locales =\
 			'model': 'choose the model responsible for syncing the lips',
 			'pure_motion': 'refine with live-portrait',
 			'motion_smoothing': 'smooth the live-portrait driver motion across frames',
-			'motion_masking': 'mask the live-portrait paste-back area for softer blending',
+			'motion_mask_mode': 'choose the mask strategy for live-portrait paste-back (off, box, hybrid)',
+			'mask_blur': 'control the feather softness of the pure-motion mask edge',
+			'mask_erode': 'shrink the pure-motion mask inward to avoid ghost chins',
+			'expressiveness': 'scale the lip transfer strength for more or less mouth movement',
 			'weight': 'specify the degree of weight applied to the lips'
 		},
 		'uis':
@@ -17,7 +20,10 @@ LOCALES : Locales =\
 			'model_dropdown': 'LIP SYNCER MODEL',
 			'pure_motion_slider': 'LIP SYNCER PURE MOTION',
 			'motion_smoothing_checkbox': 'LIP SYNCER MOTION SMOOTHING',
-			'motion_masking_checkbox': 'LIP SYNCER MOTION MASKING',
+			'motion_mask_mode_dropdown': 'LIP SYNCER MASK MODE',
+			'mask_blur_slider': 'LIP SYNCER MASK BLUR',
+			'mask_erode_slider': 'LIP SYNCER MASK ERODE',
+			'expressiveness_slider': 'LIP SYNCER EXPRESSIVENESS',
 			'weight_slider': 'LIP SYNCER WEIGHT'
 		}
 	}

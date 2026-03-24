@@ -94,7 +94,7 @@ def listen() -> None:
 		'face_mask_areas_checkbox_group',
 		'face_mask_regions_checkbox_group',
 		'lip_syncer_motion_smoothing_checkbox',
-		'lip_syncer_motion_masking_checkbox'
+		'lip_syncer_motion_mask_mode_dropdown'
 	]):
 		ui_component.change(update_preview_image, inputs = [ preview_mode_dropdown, preview_resolution_dropdown, preview_frame_slider ], outputs = PREVIEW_IMAGE)
 
@@ -104,6 +104,9 @@ def listen() -> None:
 		'face_enhancer_weight_slider',
 		'lip_syncer_pure_motion_slider',
 		'lip_syncer_weight_slider',
+		'lip_syncer_mask_blur_slider',
+		'lip_syncer_mask_erode_slider',
+		'lip_syncer_expressiveness_slider',
 		'reference_face_distance_slider',
 		'face_selector_age_range_slider',
 		'face_mask_blur_slider',

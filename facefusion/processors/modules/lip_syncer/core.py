@@ -10,16 +10,16 @@ import facefusion.jobs.job_manager
 import facefusion.jobs.job_store
 from facefusion import config, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, inference_manager, logger, state_manager, translator, video_manager, voice_extractor
 from facefusion.audio import read_static_voice
-from facefusion.common_helper import create_float_metavar, get_first
+from facefusion.common_helper import create_float_metavar, create_int_metavar, get_first
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.face_analyser import get_many_faces, get_one_face, scale_face
 from facefusion.face_helper import create_bounding_box, paste_back, warp_face_by_bounding_box, warp_face_by_face_landmark_5
-from facefusion.face_masker import create_area_mask, create_box_mask, create_occlusion_mask
+from facefusion.face_masker import create_area_mask, create_box_mask, create_occlusion_mask, create_region_mask
 from facefusion.face_selector import select_faces
 from facefusion.filesystem import filter_audio_paths, has_audio, resolve_relative_path
 from facefusion.processors.live_portrait import create_rotation, limit_expression
 from facefusion.processors.modules.lip_syncer import choices as lip_syncer_choices
-from facefusion.processors.modules.lip_syncer.types import LipSyncerInputs, LipSyncerWeight
+from facefusion.processors.modules.lip_syncer.types import LipSyncerInputs, LipSyncerMotionMaskMode, LipSyncerWeight
 from facefusion.processors.types import LivePortraitExpression, LivePortraitFeatureVolume, LivePortraitMotionPoints, LivePortraitPitch, LivePortraitRoll, LivePortraitScale, LivePortraitTranslation, LivePortraitYaw, ProcessorOutputs
 from facefusion.program_helper import find_argument_group
 from facefusion.thread_helper import conditional_thread_semaphore, thread_semaphore
@@ -263,16 +263,22 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'wav2lip_gan_96'), choices = lip_syncer_choices.lip_syncer_models)
 		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
 		group_processors.add_argument('--lip-syncer-motion-smoothing', help = translator.get('help.motion_smoothing', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_smoothing', 'False'))
-		group_processors.add_argument('--lip-syncer-motion-masking', help = translator.get('help.motion_masking', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_masking', 'True'))
+		group_processors.add_argument('--lip-syncer-motion-mask-mode', help = translator.get('help.motion_mask_mode', __package__), default = config.get_str_value('processors', 'lip_syncer_motion_mask_mode', 'hybrid'), choices = lip_syncer_choices.lip_syncer_motion_mask_modes)
+		group_processors.add_argument('--lip-syncer-mask-blur', help = translator.get('help.mask_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_mask_blur', '0.3'), choices = lip_syncer_choices.lip_syncer_mask_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_mask_blur_range))
+		group_processors.add_argument('--lip-syncer-mask-erode', help = translator.get('help.mask_erode', __package__), type = int, default = config.get_int_value('processors', 'lip_syncer_mask_erode', '15'), choices = lip_syncer_choices.lip_syncer_mask_erode_range, metavar = create_int_metavar(lip_syncer_choices.lip_syncer_mask_erode_range))
+		group_processors.add_argument('--lip-syncer-expressiveness', help = translator.get('help.expressiveness', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_expressiveness', '1.0'), choices = lip_syncer_choices.lip_syncer_expressiveness_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_expressiveness_range))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_masking', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('lip_syncer_model', args.get('lip_syncer_model'))
 	apply_state_item('lip_syncer_pure_motion', args.get('lip_syncer_pure_motion'))
 	apply_state_item('lip_syncer_motion_smoothing', args.get('lip_syncer_motion_smoothing'))
-	apply_state_item('lip_syncer_motion_masking', args.get('lip_syncer_motion_masking'))
+	apply_state_item('lip_syncer_motion_mask_mode', args.get('lip_syncer_motion_mask_mode'))
+	apply_state_item('lip_syncer_mask_blur', args.get('lip_syncer_mask_blur'))
+	apply_state_item('lip_syncer_mask_erode', args.get('lip_syncer_mask_erode'))
+	apply_state_item('lip_syncer_expressiveness', args.get('lip_syncer_expressiveness'))
 	apply_state_item('lip_syncer_weight', args.get('lip_syncer_weight'))
 
 
@@ -318,8 +324,13 @@ def has_motion_smoothing() -> bool:
 	return has_pure_motion() and bool(state_manager.get_item('lip_syncer_motion_smoothing'))
 
 
-def has_motion_masking() -> bool:
-	return has_pure_motion() and bool(state_manager.get_item('lip_syncer_motion_masking'))
+def get_motion_mask_mode() -> LipSyncerMotionMaskMode:
+	if not has_pure_motion():
+		return 'off'
+	mode = state_manager.get_item('lip_syncer_motion_mask_mode')
+	if mode in ('off', 'box', 'hybrid'):
+		return mode
+	return 'box'
 
 
 def clear_driver_expression_cache() -> None:
@@ -400,13 +411,69 @@ def process_live_portrait_motion(target_face : Face, source_voice_frame : AudioF
 
 	crop_vision_frame = forward_generate_frame(feature_volume, motion_points_source, motion_points_target)
 	crop_vision_frame = normalize_refine_frame(crop_vision_frame)
-	return crop_vision_frame, [ create_live_portrait_mask(crop_vision_frame) ]
+	return crop_vision_frame, [ create_live_portrait_mask(crop_vision_frame, target_face, affine_matrix) ]
 
 
-def create_live_portrait_mask(crop_vision_frame : VisionFrame) -> numpy.ndarray:
-	if has_motion_masking():
-		return create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
-	return numpy.ones(crop_vision_frame.shape[:2]).astype(numpy.float32)
+def create_live_portrait_mask(crop_vision_frame : VisionFrame, target_face : Face = None, affine_matrix = None) -> numpy.ndarray:
+	mask_mode = get_motion_mask_mode()
+	if mask_mode == 'off':
+		return numpy.ones(crop_vision_frame.shape[:2]).astype(numpy.float32)
+	if mask_mode == 'hybrid' and target_face is not None and affine_matrix is not None:
+		return create_hybrid_mask(crop_vision_frame, target_face, affine_matrix)
+	mask_blur = state_manager.get_item('lip_syncer_mask_blur') or state_manager.get_item('face_mask_blur')
+	return create_box_mask(crop_vision_frame, mask_blur, state_manager.get_item('face_mask_padding'))
+
+
+def create_hybrid_mask(crop_vision_frame : VisionFrame, target_face : Face, affine_matrix) -> numpy.ndarray:
+	crop_size = crop_vision_frame.shape[:2][::-1]
+	mask_blur = state_manager.get_item('lip_syncer_mask_blur') or 0.3
+	mask_erode = state_manager.get_item('lip_syncer_mask_erode') or 0
+
+	region_mask = create_region_mask(crop_vision_frame, [ 'skin', 'nose', 'mouth', 'upper-lip', 'lower-lip' ])
+	region_mask = stabilize_mask_morphology(region_mask)
+
+	face_landmark_68 = target_face.landmark_set.get('68')
+	if face_landmark_68 is not None:
+		warped_landmarks = cv2.transform(face_landmark_68.reshape(1, -1, 2), affine_matrix).reshape(-1, 2)
+		jawline_points = warped_landmarks[0:17].astype(numpy.int32)
+		brow_points = warped_landmarks[17:27].astype(numpy.int32)
+
+		contour_points = numpy.vstack([jawline_points, brow_points[::-1]])
+		contour_hull = cv2.convexHull(contour_points)
+		landmark_mask = numpy.zeros(crop_size, dtype = numpy.float32)
+		cv2.fillConvexPoly(landmark_mask, contour_hull, 1.0)
+		region_mask = numpy.minimum(region_mask, landmark_mask)
+
+	if mask_erode > 0:
+		erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mask_erode * 2 + 1, mask_erode * 2 + 1))
+		region_mask = cv2.erode(region_mask, erode_kernel, iterations = 1)
+
+	blur_sigma = max(1.0, crop_size[0] * 0.5 * mask_blur)
+	if blur_sigma > 0:
+		region_mask = cv2.GaussianBlur(region_mask, (0, 0), blur_sigma)
+
+	box_mask = create_box_mask(crop_vision_frame, mask_blur, state_manager.get_item('face_mask_padding'))
+	hybrid_mask = numpy.minimum(region_mask, box_mask)
+
+	return harmonize_mask_boundary(hybrid_mask, crop_vision_frame, blur_sigma)
+
+
+def stabilize_mask_morphology(mask : numpy.ndarray) -> numpy.ndarray:
+	morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+	mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, morph_kernel)
+	mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, morph_kernel)
+	return mask
+
+
+def harmonize_mask_boundary(mask : numpy.ndarray, crop_vision_frame : VisionFrame, blur_sigma : float) -> numpy.ndarray:
+	boundary = ((mask > 0.05) & (mask < 0.95)).astype(numpy.float32)
+	if boundary.sum() < 10:
+		return mask.clip(0, 1).astype(numpy.float32)
+
+	edge_sigma = max(1.0, blur_sigma * 0.5)
+	smoothed_mask = cv2.GaussianBlur(mask, (0, 0), edge_sigma)
+	mask = numpy.where(boundary > 0, smoothed_mask, mask)
+	return mask.clip(0, 1).astype(numpy.float32)
 
 
 def extract_template_expression(source_voice_frame : AudioFrame, frame_number : int = 0) -> LivePortraitExpression:
@@ -447,7 +514,8 @@ def create_driver_expression_sequence_cache_key(source_audio_path : str, output_
 		str(output_video_fps),
 		str(state_manager.get_item('lip_syncer_model')),
 		str(state_manager.get_item('lip_syncer_pure_motion')),
-		str(state_manager.get_item('lip_syncer_weight'))
+		str(state_manager.get_item('lip_syncer_weight')),
+		str(state_manager.get_item('lip_syncer_expressiveness'))
 	])
 
 
@@ -530,13 +598,14 @@ def calculate_source_motion_points(pitch, yaw, roll, scale, translation, express
 
 
 def create_blended_expression(expression : LivePortraitExpression, face_template_expression : LivePortraitExpression) -> LivePortraitExpression:
+	expressiveness = state_manager.get_item('lip_syncer_expressiveness') or 1.0
 	temp_expression = expression.copy()
-	temp_expression = blend_expression(6, temp_expression, face_template_expression, 0.5, 0.5, 0.5)
-	temp_expression = blend_expression(12, temp_expression, face_template_expression, 0.5, 0.5, 0.5)
-	temp_expression = blend_expression(14, temp_expression, face_template_expression, 0.6, 0.7, 0.7)
-	temp_expression = blend_expression(17, temp_expression, face_template_expression, 0.5, 0.8, 0.7)
-	temp_expression = blend_expression(20, temp_expression, face_template_expression, 0.5, 0.6, 0.7)
-	lip_open = float(numpy.interp(face_template_expression[0, 19, 1].clip(0, 1), [0, 1], [0.9, 1.5]))
+	temp_expression = blend_expression(6, temp_expression, face_template_expression, 0.5, 0.5 * expressiveness, 0.5)
+	temp_expression = blend_expression(12, temp_expression, face_template_expression, 0.5, 0.5 * expressiveness, 0.5)
+	temp_expression = blend_expression(14, temp_expression, face_template_expression, 0.6, 0.7 * expressiveness, 0.7)
+	temp_expression = blend_expression(17, temp_expression, face_template_expression, 0.5, 0.8 * expressiveness, 0.7)
+	temp_expression = blend_expression(20, temp_expression, face_template_expression, 0.5, 0.6 * expressiveness, 0.7)
+	lip_open = float(numpy.interp(face_template_expression[0, 19, 1].clip(0, 1), [0, 1], [0.9 * expressiveness, 1.5 * expressiveness]))
 	temp_expression = blend_expression(19, temp_expression, face_template_expression, 0.5, lip_open, 0.85)
 	temp_expression = limit_expression(temp_expression)
 	return temp_expression
