@@ -75,6 +75,7 @@ SAVEABLE_CONFIG_OPTIONS : Dict[str, List[str]] =\
 		'lip_syncer_model',
 		'lip_syncer_pure_motion',
 		'lip_syncer_motion_smoothing',
+		'lip_syncer_motion_masking',
 		'lip_syncer_weight'
 	],
 	'uis':

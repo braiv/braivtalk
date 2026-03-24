@@ -263,14 +263,16 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'wav2lip_gan_96'), choices = lip_syncer_choices.lip_syncer_models)
 		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
 		group_processors.add_argument('--lip-syncer-motion-smoothing', help = translator.get('help.motion_smoothing', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_smoothing', 'False'))
+		group_processors.add_argument('--lip-syncer-motion-masking', help = translator.get('help.motion_masking', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_masking', 'True'))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_masking', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('lip_syncer_model', args.get('lip_syncer_model'))
 	apply_state_item('lip_syncer_pure_motion', args.get('lip_syncer_pure_motion'))
 	apply_state_item('lip_syncer_motion_smoothing', args.get('lip_syncer_motion_smoothing'))
+	apply_state_item('lip_syncer_motion_masking', args.get('lip_syncer_motion_masking'))
 	apply_state_item('lip_syncer_weight', args.get('lip_syncer_weight'))
 
 
@@ -314,6 +316,10 @@ def has_pure_motion() -> bool:
 
 def has_motion_smoothing() -> bool:
 	return has_pure_motion() and bool(state_manager.get_item('lip_syncer_motion_smoothing'))
+
+
+def has_motion_masking() -> bool:
+	return has_pure_motion() and bool(state_manager.get_item('lip_syncer_motion_masking'))
 
 
 def clear_driver_expression_cache() -> None:
@@ -394,8 +400,13 @@ def process_live_portrait_motion(target_face : Face, source_voice_frame : AudioF
 
 	crop_vision_frame = forward_generate_frame(feature_volume, motion_points_source, motion_points_target)
 	crop_vision_frame = normalize_refine_frame(crop_vision_frame)
-	box_mask = create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
-	return crop_vision_frame, [ box_mask ]
+	return crop_vision_frame, [ create_live_portrait_mask(crop_vision_frame) ]
+
+
+def create_live_portrait_mask(crop_vision_frame : VisionFrame) -> numpy.ndarray:
+	if has_motion_masking():
+		return create_box_mask(crop_vision_frame, state_manager.get_item('face_mask_blur'), state_manager.get_item('face_mask_padding'))
+	return numpy.ones(crop_vision_frame.shape[:2]).astype(numpy.float32)
 
 
 def extract_template_expression(source_voice_frame : AudioFrame, frame_number : int = 0) -> LivePortraitExpression:
