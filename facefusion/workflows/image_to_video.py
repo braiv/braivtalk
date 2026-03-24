@@ -178,7 +178,8 @@ def process_temp_frame(temp_frame_path : str, frame_number : int) -> bool:
 			'source_voice_frame': source_voice_frame,
 			'target_vision_frame': target_vision_frame[:, :, :3],
 			'temp_vision_frame': temp_vision_frame[:, :, :3],
-			'temp_vision_mask': temp_vision_mask
+			'temp_vision_mask': temp_vision_mask,
+			'frame_number': frame_number
 		})
 
 	temp_vision_frame = conditional_merge_vision_mask(temp_vision_frame, temp_vision_mask)

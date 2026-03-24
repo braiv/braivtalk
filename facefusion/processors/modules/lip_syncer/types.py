@@ -10,7 +10,8 @@ LipSyncerInputs = TypedDict('LipSyncerInputs',
 	'source_voice_frame' : AudioFrame,
 	'target_vision_frame' : VisionFrame,
 	'temp_vision_frame' : VisionFrame,
-	'temp_vision_mask' : Mask
+	'temp_vision_mask' : Mask,
+	'frame_number' : int
 })
 
 LipSyncerModel = Literal['edtalk_256', 'wav2lip_96', 'wav2lip_gan_96']

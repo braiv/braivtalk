@@ -44,14 +44,14 @@ def render() -> None:
 	if is_image(state_manager.get_item('target_path')):
 		target_vision_frame = read_static_image(state_manager.get_item('target_path'))
 		reference_vision_frame = read_static_image(state_manager.get_item('target_path'))
-		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, target_vision_frame, uis_choices.preview_modes[0], uis_choices.preview_resolutions[-1])
+		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, target_vision_frame, uis_choices.preview_modes[0], uis_choices.preview_resolutions[-1], 0)
 		preview_image_options['value'] = cv2.cvtColor(preview_vision_frame, cv2.COLOR_BGR2RGB)
 		preview_image_options['elem_classes'] = [ 'image-preview', 'is-' + detect_frame_orientation(preview_vision_frame) ]
 
 	if is_video(state_manager.get_item('target_path')):
 		temp_vision_frame = read_video_frame(state_manager.get_item('target_path'), state_manager.get_item('reference_frame_number'))
 		reference_vision_frame = read_video_frame(state_manager.get_item('target_path'), state_manager.get_item('reference_frame_number'))
-		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, temp_vision_frame, uis_choices.preview_modes[0], uis_choices.preview_resolutions[-1])
+		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, temp_vision_frame, uis_choices.preview_modes[0], uis_choices.preview_resolutions[-1], state_manager.get_item('reference_frame_number'))
 		preview_image_options['value'] = cv2.cvtColor(preview_vision_frame, cv2.COLOR_BGR2RGB)
 		preview_image_options['elem_classes'] = [ 'image-preview', 'is-' + detect_frame_orientation(preview_vision_frame) ]
 		preview_image_options['visible'] = True
@@ -92,7 +92,8 @@ def listen() -> None:
 	[
 		'face_mask_types_checkbox_group',
 		'face_mask_areas_checkbox_group',
-		'face_mask_regions_checkbox_group'
+		'face_mask_regions_checkbox_group',
+		'lip_syncer_motion_smoothing_checkbox'
 	]):
 		ui_component.change(update_preview_image, inputs = [ preview_mode_dropdown, preview_resolution_dropdown, preview_frame_slider ], outputs = PREVIEW_IMAGE)
 
@@ -163,7 +164,7 @@ def update_preview_image(preview_mode : PreviewMode, preview_resolution : str, f
 		target_vision_frame = read_static_image(state_manager.get_item('target_path'), 'rgba')
 		target_vision_mask = extract_vision_mask(target_vision_frame)
 		target_vision_frame = merge_vision_mask(target_vision_frame, target_vision_mask)
-		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, target_vision_frame, preview_mode, preview_resolution)
+		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, target_vision_frame, preview_mode, preview_resolution, frame_number)
 		preview_vision_frame = cv2.cvtColor(preview_vision_frame, cv2.COLOR_BGRA2RGBA)
 		return gradio.Image(value = preview_vision_frame, elem_classes = [ 'image-preview', 'is-' + detect_frame_orientation(preview_vision_frame) ])
 
@@ -172,7 +173,7 @@ def update_preview_image(preview_mode : PreviewMode, preview_resolution : str, f
 		temp_vision_frame = read_video_frame(state_manager.get_item('target_path'), frame_number)
 		temp_vision_mask = extract_vision_mask(temp_vision_frame)
 		temp_vision_frame = merge_vision_mask(temp_vision_frame, temp_vision_mask)
-		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, temp_vision_frame, preview_mode, preview_resolution)
+		preview_vision_frame = process_preview_frame(reference_vision_frame, source_vision_frames, source_audio_frame, source_voice_frame, temp_vision_frame, preview_mode, preview_resolution, frame_number)
 		preview_vision_frame = cv2.cvtColor(preview_vision_frame, cv2.COLOR_BGRA2RGBA)
 		return gradio.Image(value = preview_vision_frame, elem_classes = [ 'image-preview', 'is-' + detect_frame_orientation(preview_vision_frame) ])
 	return gradio.Image(value = None, elem_classes = None)
@@ -183,7 +184,7 @@ def clear_and_update_preview_image(preview_mode : PreviewMode, preview_resolutio
 	return update_preview_image(preview_mode, preview_resolution, frame_number)
 
 
-def process_preview_frame(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], source_audio_frame : AudioFrame, source_voice_frame : AudioFrame, target_vision_frame : VisionFrame, preview_mode : PreviewMode, preview_resolution : str) -> VisionFrame:
+def process_preview_frame(reference_vision_frame : VisionFrame, source_vision_frames : List[VisionFrame], source_audio_frame : AudioFrame, source_voice_frame : AudioFrame, target_vision_frame : VisionFrame, preview_mode : PreviewMode, preview_resolution : str, frame_number : int = 0) -> VisionFrame:
 	target_vision_frame = restrict_frame(target_vision_frame, unpack_resolution(preview_resolution))
 	temp_vision_frame = target_vision_frame.copy()
 	temp_vision_mask = extract_vision_mask(temp_vision_frame)
@@ -214,7 +215,8 @@ def process_preview_frame(reference_vision_frame : VisionFrame, source_vision_fr
 				'source_vision_frames': source_vision_frames,
 				'target_vision_frame': target_vision_frame[:, :, :3],
 				'temp_vision_frame': temp_vision_frame[:, :, :3],
-				'temp_vision_mask': temp_vision_mask
+				'temp_vision_mask': temp_vision_mask,
+				'frame_number': frame_number
 			})
 		logger.enable()
 

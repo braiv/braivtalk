@@ -80,7 +80,8 @@ def process_image() -> ErrorCode:
 			'source_voice_frame': source_voice_frame,
 			'target_vision_frame': target_vision_frame[:, :, :3],
 			'temp_vision_frame': temp_vision_frame[:, :, :3],
-			'temp_vision_mask': temp_vision_mask
+			'temp_vision_mask': temp_vision_mask,
+			'frame_number': 0
 		})
 
 		processor_module.post_process()
