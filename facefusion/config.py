@@ -78,6 +78,10 @@ SAVEABLE_CONFIG_OPTIONS : Dict[str, List[str]] =\
 		'lip_syncer_motion_mask_mode',
 		'lip_syncer_mask_blur',
 		'lip_syncer_mask_erode',
+		'lip_syncer_mask_expand',
+		'lip_syncer_chin_expand',
+		'lip_syncer_occlusion_dilate',
+		'lip_syncer_occlusion_blur',
 		'lip_syncer_expressiveness',
 		'lip_syncer_weight'
 	],

@@ -13,9 +13,7 @@ ComponentName = Literal\
 	'face_enhancer_weight_slider',
 	'face_landmarker_model_dropdown',
 	'face_landmarker_score_slider',
-	'face_mask_types_checkbox_group',
-	'face_mask_areas_checkbox_group',
-	'face_mask_regions_checkbox_group',
+	'face_mask_occlusion_checkbox',
 	'face_mask_blur_slider',
 	'face_mask_padding_bottom_slider',
 	'face_mask_padding_left_slider',
@@ -32,6 +30,15 @@ ComponentName = Literal\
 	'job_list_job_status_checkbox_group',
 	'lip_syncer_model_dropdown',
 	'lip_syncer_pure_motion_slider',
+	'lip_syncer_motion_smoothing_checkbox',
+	'lip_syncer_motion_mask_mode_dropdown',
+	'lip_syncer_mask_blur_slider',
+	'lip_syncer_mask_erode_slider',
+	'lip_syncer_mask_expand_slider',
+	'lip_syncer_chin_expand_slider',
+	'lip_syncer_occlusion_dilate_slider',
+	'lip_syncer_occlusion_blur_slider',
+	'lip_syncer_expressiveness_slider',
 	'lip_syncer_weight_slider',
 	'output_image',
 	'output_video',
@@ -59,6 +66,6 @@ ComponentOptions : TypeAlias = Dict[str, Any]
 JobManagerAction = Literal['job-create', 'job-submit', 'job-delete', 'job-add-step', 'job-remix-step', 'job-insert-step', 'job-remove-step']
 JobRunnerAction = Literal['job-run', 'job-run-all', 'job-retry', 'job-retry-all']
 
-PreviewMode = Literal[ 'default', 'frame-by-frame', 'face-by-face' ]
+PreviewMode = Literal[ 'default', 'frame-by-frame', 'face-by-face', 'mask-debug' ]
 
 MockArgs : TypeAlias = Any

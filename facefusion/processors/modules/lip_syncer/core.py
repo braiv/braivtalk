@@ -266,9 +266,13 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-motion-mask-mode', help = translator.get('help.motion_mask_mode', __package__), default = config.get_str_value('processors', 'lip_syncer_motion_mask_mode', 'hybrid'), choices = lip_syncer_choices.lip_syncer_motion_mask_modes)
 		group_processors.add_argument('--lip-syncer-mask-blur', help = translator.get('help.mask_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_mask_blur', '0.3'), choices = lip_syncer_choices.lip_syncer_mask_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_mask_blur_range))
 		group_processors.add_argument('--lip-syncer-mask-erode', help = translator.get('help.mask_erode', __package__), type = int, default = config.get_int_value('processors', 'lip_syncer_mask_erode', '15'), choices = lip_syncer_choices.lip_syncer_mask_erode_range, metavar = create_int_metavar(lip_syncer_choices.lip_syncer_mask_erode_range))
+		group_processors.add_argument('--lip-syncer-mask-expand', help = translator.get('help.mask_expand', __package__), type = int, default = config.get_int_value('processors', 'lip_syncer_mask_expand', '0'), choices = lip_syncer_choices.lip_syncer_mask_expand_range, metavar = create_int_metavar(lip_syncer_choices.lip_syncer_mask_expand_range))
+		group_processors.add_argument('--lip-syncer-chin-expand', help = translator.get('help.chin_expand', __package__), type = int, default = config.get_int_value('processors', 'lip_syncer_chin_expand', '0'), choices = lip_syncer_choices.lip_syncer_chin_expand_range, metavar = create_int_metavar(lip_syncer_choices.lip_syncer_chin_expand_range))
+		group_processors.add_argument('--lip-syncer-occlusion-dilate', help = translator.get('help.occlusion_dilate', __package__), type = int, default = config.get_int_value('processors', 'lip_syncer_occlusion_dilate', '0'), choices = lip_syncer_choices.lip_syncer_occlusion_dilate_range, metavar = create_int_metavar(lip_syncer_choices.lip_syncer_occlusion_dilate_range))
+		group_processors.add_argument('--lip-syncer-occlusion-blur', help = translator.get('help.occlusion_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_occlusion_blur', '0.0'), choices = lip_syncer_choices.lip_syncer_occlusion_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_occlusion_blur_range))
 		group_processors.add_argument('--lip-syncer-expressiveness', help = translator.get('help.expressiveness', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_expressiveness', '1.0'), choices = lip_syncer_choices.lip_syncer_expressiveness_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_expressiveness_range))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
@@ -278,6 +282,10 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('lip_syncer_motion_mask_mode', args.get('lip_syncer_motion_mask_mode'))
 	apply_state_item('lip_syncer_mask_blur', args.get('lip_syncer_mask_blur'))
 	apply_state_item('lip_syncer_mask_erode', args.get('lip_syncer_mask_erode'))
+	apply_state_item('lip_syncer_mask_expand', args.get('lip_syncer_mask_expand'))
+	apply_state_item('lip_syncer_chin_expand', args.get('lip_syncer_chin_expand'))
+	apply_state_item('lip_syncer_occlusion_dilate', args.get('lip_syncer_occlusion_dilate'))
+	apply_state_item('lip_syncer_occlusion_blur', args.get('lip_syncer_occlusion_blur'))
 	apply_state_item('lip_syncer_expressiveness', args.get('lip_syncer_expressiveness'))
 	apply_state_item('lip_syncer_weight', args.get('lip_syncer_weight'))
 
@@ -338,7 +346,7 @@ def clear_driver_expression_cache() -> None:
 		_driver_expression_cache.clear()
 
 
-def sync_lip(target_face : Face, source_voice_frame : AudioFrame, temp_vision_frame : VisionFrame, frame_number : int = 0) -> VisionFrame:
+def sync_lip(target_face : Face, source_voice_frame : AudioFrame, temp_vision_frame : VisionFrame, frame_number : int = 0, debug_mask : bool = False) -> VisionFrame:
 	source_voice_frame = prepare_audio_frame(source_voice_frame)
 	crop_vision_frame, affine_matrix = warp_face_by_face_landmark_5(temp_vision_frame, target_face.landmark_set.get('5/68'), 'ffhq_512', (512, 512))
 	crop_masks = create_occlusion_masks(crop_vision_frame)
@@ -351,14 +359,45 @@ def sync_lip(target_face : Face, source_voice_frame : AudioFrame, temp_vision_fr
 		crop_masks.extend(additional_masks)
 
 	crop_mask = numpy.minimum.reduce(crop_masks)
+
+	if debug_mask:
+		return visualize_mask(temp_vision_frame, crop_mask, affine_matrix)
+
 	paste_vision_frame = paste_back(temp_vision_frame, crop_vision_frame, crop_mask, affine_matrix)
 	return paste_vision_frame
+
+
+def visualize_mask(temp_vision_frame : VisionFrame, crop_mask : numpy.ndarray, affine_matrix) -> VisionFrame:
+	from facefusion.face_helper import calculate_paste_area
+
+	crop_h, crop_w = crop_mask.shape[:2]
+	dummy_crop = numpy.zeros((crop_h, crop_w, 3), dtype = numpy.uint8)
+	paste_bounding_box, paste_matrix = calculate_paste_area(temp_vision_frame, dummy_crop, affine_matrix)
+	x1, y1, x2, y2 = paste_bounding_box
+	paste_width = x2 - x1
+	paste_height = y2 - y1
+	inverse_mask = cv2.warpAffine(crop_mask, paste_matrix, (paste_width, paste_height)).clip(0, 1)
+
+	output_frame = temp_vision_frame.copy()
+	roi = output_frame[y1:y2, x1:x2].astype(numpy.float32)
+
+	mask_3d = numpy.expand_dims(inverse_mask, axis = -1)
+	green_overlay = numpy.full_like(roi, (0, 128, 0), dtype = numpy.float32)
+	red_overlay = numpy.full_like(roi, (0, 0, 128), dtype = numpy.float32)
+	roi = roi * (1 - mask_3d * 0.35) + green_overlay * mask_3d * 0.35
+	roi = roi * (1 - (1 - mask_3d) * 0.2) + red_overlay * (1 - mask_3d) * 0.2
+
+	output_frame[y1:y2, x1:x2] = roi.clip(0, 255).astype(numpy.uint8)
+	return output_frame
 
 
 def create_occlusion_masks(crop_vision_frame : VisionFrame) -> List:
 	crop_masks = []
 	if 'occlusion' in state_manager.get_item('face_mask_types'):
 		occlusion_mask = create_occlusion_mask(crop_vision_frame)
+		if has_pure_motion():
+			occlusion_mask = dilate_mask(occlusion_mask, state_manager.get_item('lip_syncer_occlusion_dilate') or 0)
+			occlusion_mask = blur_mask(occlusion_mask, state_manager.get_item('lip_syncer_occlusion_blur') or 0)
 		crop_masks.append(occlusion_mask)
 	return crop_masks
 
@@ -418,10 +457,12 @@ def create_live_portrait_mask(crop_vision_frame : VisionFrame, target_face : Fac
 	mask_mode = get_motion_mask_mode()
 	if mask_mode == 'off':
 		return numpy.ones(crop_vision_frame.shape[:2]).astype(numpy.float32)
-	if mask_mode == 'hybrid' and target_face is not None and affine_matrix is not None:
-		return create_hybrid_mask(crop_vision_frame, target_face, affine_matrix)
 	mask_blur = state_manager.get_item('lip_syncer_mask_blur') or state_manager.get_item('face_mask_blur')
-	return create_box_mask(crop_vision_frame, mask_blur, state_manager.get_item('face_mask_padding'))
+	if mask_mode == 'hybrid' and target_face is not None and affine_matrix is not None:
+		mask = create_hybrid_mask(crop_vision_frame, target_face, affine_matrix)
+	else:
+		mask = create_box_mask(crop_vision_frame, mask_blur, state_manager.get_item('face_mask_padding'))
+	return tune_motion_mask(mask, mask_blur)
 
 
 def create_hybrid_mask(crop_vision_frame : VisionFrame, target_face : Face, affine_matrix) -> numpy.ndarray:
@@ -456,6 +497,45 @@ def create_hybrid_mask(crop_vision_frame : VisionFrame, target_face : Face, affi
 	hybrid_mask = numpy.minimum(region_mask, box_mask)
 
 	return harmonize_mask_boundary(hybrid_mask, crop_vision_frame, blur_sigma)
+
+
+def tune_motion_mask(mask : numpy.ndarray, mask_blur : float) -> numpy.ndarray:
+	mask_width = mask.shape[1]
+	mask = dilate_mask(mask, state_manager.get_item('lip_syncer_mask_expand') or 0)
+	mask = expand_mask_toward_chin(mask, state_manager.get_item('lip_syncer_chin_expand') or 0)
+	return harmonize_mask_boundary(mask, mask, max(1.0, mask_width * 0.5 * mask_blur))
+
+
+def dilate_mask(mask : numpy.ndarray, dilate_amount : int) -> numpy.ndarray:
+	if dilate_amount <= 0:
+		return mask.clip(0, 1).astype(numpy.float32)
+	kernel_size = dilate_amount * 2 + 1
+	dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+	mask = cv2.dilate(mask.astype(numpy.float32), dilate_kernel, iterations = 1)
+	return mask.clip(0, 1).astype(numpy.float32)
+
+
+def blur_mask(mask : numpy.ndarray, blur_amount : float) -> numpy.ndarray:
+	if blur_amount <= 0:
+		return mask.clip(0, 1).astype(numpy.float32)
+	mask_width = mask.shape[1]
+	blur_sigma = max(1.0, mask_width * 0.5 * blur_amount)
+	mask = cv2.GaussianBlur(mask.astype(numpy.float32), (0, 0), blur_sigma)
+	return mask.clip(0, 1).astype(numpy.float32)
+
+
+def expand_mask_toward_chin(mask : numpy.ndarray, chin_expand : int) -> numpy.ndarray:
+	if chin_expand <= 0:
+		return mask.clip(0, 1).astype(numpy.float32)
+
+	mask_height, mask_width = mask.shape[:2]
+	translation_matrix = numpy.array([ [ 1, 0, 0 ], [ 0, 1, chin_expand ] ], dtype = numpy.float32)
+	shifted_mask = cv2.warpAffine(mask.astype(numpy.float32), translation_matrix, (mask_width, mask_height), borderMode = cv2.BORDER_CONSTANT, borderValue = 0)
+	lower_face_gate = numpy.zeros_like(mask, dtype = numpy.float32)
+	lower_face_start = int(mask_height * 0.45)
+	lower_face_gate[lower_face_start:, :] = 1.0
+	mask = numpy.maximum(mask, shifted_mask * lower_face_gate)
+	return mask.clip(0, 1).astype(numpy.float32)
 
 
 def stabilize_mask_morphology(mask : numpy.ndarray) -> numpy.ndarray:
@@ -770,11 +850,12 @@ def process_frame(inputs : LipSyncerInputs) -> ProcessorOutputs:
 	temp_vision_frame = inputs.get('temp_vision_frame')
 	temp_vision_mask = inputs.get('temp_vision_mask')
 	frame_number = inputs.get('frame_number')
+	debug_mask = inputs.get('debug_mask', False)
 	target_faces = select_faces(reference_vision_frame, target_vision_frame)
 
 	if target_faces:
 		for target_face in target_faces:
 			target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
-			temp_vision_frame = sync_lip(target_face, source_voice_frame, temp_vision_frame, frame_number)
+			temp_vision_frame = sync_lip(target_face, source_voice_frame, temp_vision_frame, frame_number, debug_mask)
 
 	return temp_vision_frame, temp_vision_mask

@@ -90,9 +90,7 @@ def listen() -> None:
 
 	for ui_component in get_ui_components(
 	[
-		'face_mask_types_checkbox_group',
-		'face_mask_areas_checkbox_group',
-		'face_mask_regions_checkbox_group',
+		'face_mask_occlusion_checkbox',
 		'lip_syncer_motion_smoothing_checkbox',
 		'lip_syncer_motion_mask_mode_dropdown'
 	]):
@@ -106,6 +104,10 @@ def listen() -> None:
 		'lip_syncer_weight_slider',
 		'lip_syncer_mask_blur_slider',
 		'lip_syncer_mask_erode_slider',
+		'lip_syncer_mask_expand_slider',
+		'lip_syncer_chin_expand_slider',
+		'lip_syncer_occlusion_dilate_slider',
+		'lip_syncer_occlusion_blur_slider',
 		'lip_syncer_expressiveness_slider',
 		'reference_face_distance_slider',
 		'face_selector_age_range_slider',
@@ -207,11 +209,13 @@ def process_preview_frame(reference_vision_frame : VisionFrame, source_vision_fr
 		temp_vision_frame = obscure_frame(temp_vision_frame)
 		return temp_vision_frame
 
+	is_mask_debug = preview_mode == 'mask-debug'
+
 	for processor_module in get_processors_modules(state_manager.get_item('processors')):
 		logger.disable()
 		if processor_module.pre_process('preview'):
 			logger.enable()
-			temp_vision_frame, temp_vision_mask = processor_module.process_frame(
+			process_inputs =\
 			{
 				'reference_vision_frame': reference_vision_frame,
 				'source_audio_frame': source_audio_frame,
@@ -221,7 +225,10 @@ def process_preview_frame(reference_vision_frame : VisionFrame, source_vision_fr
 				'temp_vision_frame': temp_vision_frame[:, :, :3],
 				'temp_vision_mask': temp_vision_mask,
 				'frame_number': frame_number
-			})
+			}
+			if is_mask_debug:
+				process_inputs['debug_mask'] = True
+			temp_vision_frame, temp_vision_mask = processor_module.process_frame(process_inputs)
 		logger.enable()
 
 	temp_vision_frame = prepare_output_frame(target_vision_frame, temp_vision_frame, temp_vision_mask)
