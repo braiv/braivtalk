@@ -262,6 +262,7 @@ def register_args(program : ArgumentParser) -> None:
 	if group_processors:
 		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'wav2lip_gan_96'), choices = lip_syncer_choices.lip_syncer_models)
 		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
+		group_processors.add_argument('--lip-syncer-motion-damping', help = translator.get('help.motion_damping', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_motion_damping', '0.0'), choices = lip_syncer_choices.lip_syncer_motion_damping_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_motion_damping_range))
 		group_processors.add_argument('--lip-syncer-motion-smoothing', help = translator.get('help.motion_smoothing', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_smoothing', 'False'))
 		group_processors.add_argument('--lip-syncer-motion-mask-mode', help = translator.get('help.motion_mask_mode', __package__), default = config.get_str_value('processors', 'lip_syncer_motion_mask_mode', 'hybrid'), choices = lip_syncer_choices.lip_syncer_motion_mask_modes)
 		group_processors.add_argument('--lip-syncer-mask-blur', help = translator.get('help.mask_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_mask_blur', '0.3'), choices = lip_syncer_choices.lip_syncer_mask_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_mask_blur_range))
@@ -272,12 +273,13 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-occlusion-blur', help = translator.get('help.occlusion_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_occlusion_blur', '0.0'), choices = lip_syncer_choices.lip_syncer_occlusion_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_occlusion_blur_range))
 		group_processors.add_argument('--lip-syncer-expressiveness', help = translator.get('help.expressiveness', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_expressiveness', '1.0'), choices = lip_syncer_choices.lip_syncer_expressiveness_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_expressiveness_range))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_damping', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('lip_syncer_model', args.get('lip_syncer_model'))
 	apply_state_item('lip_syncer_pure_motion', args.get('lip_syncer_pure_motion'))
+	apply_state_item('lip_syncer_motion_damping', args.get('lip_syncer_motion_damping'))
 	apply_state_item('lip_syncer_motion_smoothing', args.get('lip_syncer_motion_smoothing'))
 	apply_state_item('lip_syncer_motion_mask_mode', args.get('lip_syncer_motion_mask_mode'))
 	apply_state_item('lip_syncer_mask_blur', args.get('lip_syncer_mask_blur'))
@@ -449,11 +451,24 @@ def process_live_portrait_motion(target_face : Face, source_voice_frame : AudioF
 	motion_points_target = calculate_target_motion_points(pitch, yaw, roll, scale, translation, expression, motion_points)
 	blended_expression = create_blended_expression(expression, face_template_expression)
 	motion_points_source = calculate_source_motion_points(pitch, yaw, roll, scale, translation, blended_expression, motion_points)
+	pre_stitch_motion_points = motion_points_source.copy()
 	motion_points_source = forward_stitch_motion_points(motion_points_source, motion_points_target)
+	motion_points_source = damp_stitch_motion_points(pre_stitch_motion_points, motion_points_source)
 
 	crop_vision_frame = forward_generate_frame(feature_volume, motion_points_source, motion_points_target)
 	crop_vision_frame = normalize_refine_frame(crop_vision_frame)
 	return crop_vision_frame, [ create_live_portrait_mask(crop_vision_frame, target_face, affine_matrix) ]
+
+
+def damp_stitch_motion_points(base_motion_points : LivePortraitMotionPoints, stitched_motion_points : LivePortraitMotionPoints) -> LivePortraitMotionPoints:
+	motion_damping = state_manager.get_item('lip_syncer_motion_damping') or 0.0
+	if motion_damping <= 0:
+		return stitched_motion_points
+
+	correction = stitched_motion_points - base_motion_points
+	damping_strength = max(0.0, min(1.0, 1.0 - motion_damping))
+
+	return base_motion_points + correction * damping_strength
 
 
 def create_live_portrait_mask(crop_vision_frame : VisionFrame, target_face : Face = None, affine_matrix = None) -> numpy.ndarray:

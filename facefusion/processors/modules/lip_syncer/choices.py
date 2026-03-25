@@ -7,6 +7,7 @@ lip_syncer_models : List[LipSyncerModel] = list(get_args(LipSyncerModel))
 lip_syncer_motion_mask_modes : List[LipSyncerMotionMaskMode] = list(get_args(LipSyncerMotionMaskMode))
 
 lip_syncer_pure_motion_range : Sequence[float] = create_float_range(0.0, 1.5, 0.25)
+lip_syncer_motion_damping_range : Sequence[float] = create_float_range(0.0, 1.0, 0.05)
 lip_syncer_weight_range : Sequence[float] = create_float_range(0.0, 1.0, 0.05)
 lip_syncer_mask_blur_range : Sequence[float] = create_float_range(0.0, 1.0, 0.05)
 lip_syncer_mask_erode_range : Sequence[int] = create_int_range(0, 40, 1)

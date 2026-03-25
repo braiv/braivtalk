@@ -11,6 +11,7 @@ from facefusion.uis.core import get_ui_component, register_ui_component
 
 LIP_SYNCER_MODEL_DROPDOWN : Optional[gradio.Dropdown] = None
 LIP_SYNCER_PURE_MOTION_SLIDER : Optional[gradio.Slider] = None
+LIP_SYNCER_MOTION_DAMPING_SLIDER : Optional[gradio.Slider] = None
 LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX : Optional[gradio.Checkbox] = None
 LIP_SYNCER_OCCLUSION_DILATE_SLIDER : Optional[gradio.Slider] = None
 LIP_SYNCER_OCCLUSION_BLUR_SLIDER : Optional[gradio.Slider] = None
@@ -21,6 +22,7 @@ LIP_SYNCER_WEIGHT_SLIDER : Optional[gradio.Slider] = None
 def render() -> None:
 	global LIP_SYNCER_MODEL_DROPDOWN
 	global LIP_SYNCER_PURE_MOTION_SLIDER
+	global LIP_SYNCER_MOTION_DAMPING_SLIDER
 	global LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX
 	global LIP_SYNCER_OCCLUSION_DILATE_SLIDER
 	global LIP_SYNCER_OCCLUSION_BLUR_SLIDER
@@ -41,6 +43,14 @@ def render() -> None:
 		step = calculate_float_step(lip_syncer_choices.lip_syncer_pure_motion_range),
 		minimum = lip_syncer_choices.lip_syncer_pure_motion_range[0],
 		maximum = lip_syncer_choices.lip_syncer_pure_motion_range[-1],
+		visible = has_lip_syncer
+	)
+	LIP_SYNCER_MOTION_DAMPING_SLIDER = gradio.Slider(
+		label = translator.get('uis.motion_damping_slider', 'facefusion.processors.modules.lip_syncer'),
+		value = state_manager.get_item('lip_syncer_motion_damping'),
+		step = calculate_float_step(lip_syncer_choices.lip_syncer_motion_damping_range),
+		minimum = lip_syncer_choices.lip_syncer_motion_damping_range[0],
+		maximum = lip_syncer_choices.lip_syncer_motion_damping_range[-1],
 		visible = has_lip_syncer
 	)
 	LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX = gradio.Checkbox(
@@ -82,6 +92,7 @@ def render() -> None:
 	)
 	register_ui_component('lip_syncer_model_dropdown', LIP_SYNCER_MODEL_DROPDOWN)
 	register_ui_component('lip_syncer_pure_motion_slider', LIP_SYNCER_PURE_MOTION_SLIDER)
+	register_ui_component('lip_syncer_motion_damping_slider', LIP_SYNCER_MOTION_DAMPING_SLIDER)
 	register_ui_component('lip_syncer_motion_smoothing_checkbox', LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX)
 	register_ui_component('lip_syncer_occlusion_dilate_slider', LIP_SYNCER_OCCLUSION_DILATE_SLIDER)
 	register_ui_component('lip_syncer_occlusion_blur_slider', LIP_SYNCER_OCCLUSION_BLUR_SLIDER)
@@ -92,6 +103,7 @@ def render() -> None:
 def listen() -> None:
 	LIP_SYNCER_MODEL_DROPDOWN.change(update_lip_syncer_model, inputs = LIP_SYNCER_MODEL_DROPDOWN, outputs = LIP_SYNCER_MODEL_DROPDOWN)
 	LIP_SYNCER_PURE_MOTION_SLIDER.release(update_lip_syncer_pure_motion, inputs = LIP_SYNCER_PURE_MOTION_SLIDER)
+	LIP_SYNCER_MOTION_DAMPING_SLIDER.release(update_lip_syncer_motion_damping, inputs = LIP_SYNCER_MOTION_DAMPING_SLIDER)
 	LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX.change(update_lip_syncer_motion_smoothing, inputs = LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX)
 	LIP_SYNCER_OCCLUSION_DILATE_SLIDER.release(update_lip_syncer_occlusion_dilate, inputs = LIP_SYNCER_OCCLUSION_DILATE_SLIDER)
 	LIP_SYNCER_OCCLUSION_BLUR_SLIDER.release(update_lip_syncer_occlusion_blur, inputs = LIP_SYNCER_OCCLUSION_BLUR_SLIDER)
@@ -100,12 +112,12 @@ def listen() -> None:
 
 	processors_checkbox_group = get_ui_component('processors_checkbox_group')
 	if processors_checkbox_group:
-		processors_checkbox_group.change(remote_update, inputs = processors_checkbox_group, outputs = [ LIP_SYNCER_MODEL_DROPDOWN, LIP_SYNCER_PURE_MOTION_SLIDER, LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX, LIP_SYNCER_OCCLUSION_DILATE_SLIDER, LIP_SYNCER_OCCLUSION_BLUR_SLIDER, LIP_SYNCER_EXPRESSIVENESS_SLIDER, LIP_SYNCER_WEIGHT_SLIDER ])
+		processors_checkbox_group.change(remote_update, inputs = processors_checkbox_group, outputs = [ LIP_SYNCER_MODEL_DROPDOWN, LIP_SYNCER_PURE_MOTION_SLIDER, LIP_SYNCER_MOTION_DAMPING_SLIDER, LIP_SYNCER_MOTION_SMOOTHING_CHECKBOX, LIP_SYNCER_OCCLUSION_DILATE_SLIDER, LIP_SYNCER_OCCLUSION_BLUR_SLIDER, LIP_SYNCER_EXPRESSIVENESS_SLIDER, LIP_SYNCER_WEIGHT_SLIDER ])
 
 
-def remote_update(processors : List[str]) -> Tuple[gradio.Dropdown, gradio.Slider, gradio.Checkbox, gradio.Slider, gradio.Slider, gradio.Slider, gradio.Slider]:
+def remote_update(processors : List[str]) -> Tuple[gradio.Dropdown, gradio.Slider, gradio.Slider, gradio.Checkbox, gradio.Slider, gradio.Slider, gradio.Slider, gradio.Slider]:
 	has_lip_syncer = 'lip_syncer' in processors
-	return gradio.Dropdown(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Checkbox(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer)
+	return gradio.Dropdown(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Checkbox(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer), gradio.Slider(visible = has_lip_syncer)
 
 
 def update_lip_syncer_model(lip_syncer_model : LipSyncerModel) -> gradio.Dropdown:
@@ -122,6 +134,10 @@ def update_lip_syncer_pure_motion(lip_syncer_pure_motion : float) -> None:
 	lip_syncer_module = load_processor_module('lip_syncer')
 	lip_syncer_module.clear_inference_pool()
 	state_manager.set_item('lip_syncer_pure_motion', lip_syncer_pure_motion)
+
+
+def update_lip_syncer_motion_damping(lip_syncer_motion_damping : float) -> None:
+	state_manager.set_item('lip_syncer_motion_damping', lip_syncer_motion_damping)
 
 
 def update_lip_syncer_motion_smoothing(lip_syncer_motion_smoothing : bool) -> None:

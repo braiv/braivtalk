@@ -8,6 +8,7 @@ LOCALES : Locales =\
 		{
 			'model': 'choose the model responsible for syncing the lips',
 			'pure_motion': 'refine with live-portrait',
+			'motion_damping': 'reduce the stitcher correction strength to calm jittery live-portrait motion',
 			'motion_smoothing': 'smooth the live-portrait driver motion across frames',
 			'motion_mask_mode': 'choose the mask strategy for live-portrait paste-back (off, box, hybrid)',
 			'mask_blur': 'control the feather softness of the pure-motion mask edge',
@@ -23,6 +24,7 @@ LOCALES : Locales =\
 		{
 			'model_dropdown': 'LIP SYNCER MODEL',
 			'pure_motion_slider': 'LIP SYNCER PURE MOTION',
+			'motion_damping_slider': 'LIP SYNCER MOTION DAMPING',
 			'motion_smoothing_checkbox': 'LIP SYNCER MOTION SMOOTHING',
 			'motion_mask_mode_dropdown': 'LIP SYNCER MASK MODE',
 			'mask_blur_slider': 'LIP SYNCER MASK BLUR',

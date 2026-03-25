@@ -30,6 +30,7 @@ ComponentName = Literal\
 	'job_list_job_status_checkbox_group',
 	'lip_syncer_model_dropdown',
 	'lip_syncer_pure_motion_slider',
+	'lip_syncer_motion_damping_slider',
 	'lip_syncer_motion_smoothing_checkbox',
 	'lip_syncer_occlusion_dilate_slider',
 	'lip_syncer_occlusion_blur_slider',
