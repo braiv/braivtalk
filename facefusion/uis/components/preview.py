@@ -91,8 +91,7 @@ def listen() -> None:
 	for ui_component in get_ui_components(
 	[
 		'face_mask_occlusion_checkbox',
-		'lip_syncer_motion_smoothing_checkbox',
-		'lip_syncer_motion_mask_mode_dropdown'
+		'lip_syncer_motion_smoothing_checkbox'
 	]):
 		ui_component.change(update_preview_image, inputs = [ preview_mode_dropdown, preview_resolution_dropdown, preview_frame_slider ], outputs = PREVIEW_IMAGE)
 
@@ -102,20 +101,12 @@ def listen() -> None:
 		'face_enhancer_weight_slider',
 		'lip_syncer_pure_motion_slider',
 		'lip_syncer_weight_slider',
-		'lip_syncer_mask_blur_slider',
-		'lip_syncer_mask_erode_slider',
-		'lip_syncer_mask_expand_slider',
-		'lip_syncer_chin_expand_slider',
 		'lip_syncer_occlusion_dilate_slider',
 		'lip_syncer_occlusion_blur_slider',
 		'lip_syncer_expressiveness_slider',
 		'reference_face_distance_slider',
 		'face_selector_age_range_slider',
 		'face_mask_blur_slider',
-		'face_mask_padding_top_slider',
-		'face_mask_padding_bottom_slider',
-		'face_mask_padding_left_slider',
-		'face_mask_padding_right_slider',
 		'output_video_fps_slider'
 	]):
 		ui_component.release(update_preview_image, inputs = [ preview_mode_dropdown, preview_resolution_dropdown, preview_frame_slider ], outputs = PREVIEW_IMAGE)

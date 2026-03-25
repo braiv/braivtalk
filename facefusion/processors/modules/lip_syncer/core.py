@@ -396,8 +396,11 @@ def create_occlusion_masks(crop_vision_frame : VisionFrame) -> List:
 	if 'occlusion' in state_manager.get_item('face_mask_types'):
 		occlusion_mask = create_occlusion_mask(crop_vision_frame)
 		if has_pure_motion():
-			occlusion_mask = dilate_mask(occlusion_mask, state_manager.get_item('lip_syncer_occlusion_dilate') or 0)
-			occlusion_mask = blur_mask(occlusion_mask, state_manager.get_item('lip_syncer_occlusion_blur') or 0)
+			occlusion_mask = relax_occlusion_mask(
+				occlusion_mask,
+				state_manager.get_item('lip_syncer_occlusion_dilate') or 0,
+				state_manager.get_item('lip_syncer_occlusion_blur') or 0
+			)
 		crop_masks.append(occlusion_mask)
 	return crop_masks
 
@@ -515,13 +518,27 @@ def dilate_mask(mask : numpy.ndarray, dilate_amount : int) -> numpy.ndarray:
 	return mask.clip(0, 1).astype(numpy.float32)
 
 
-def blur_mask(mask : numpy.ndarray, blur_amount : float) -> numpy.ndarray:
+def relax_occlusion_mask(mask : numpy.ndarray, dilate_amount : int, blur_amount : float) -> numpy.ndarray:
+	mask = mask.clip(0, 1).astype(numpy.float32)
+	base_binary = (mask > 0.5).astype(numpy.uint8)
+	if dilate_amount <= 0:
+		return base_binary.astype(numpy.float32)
+
+	dilated_binary = (dilate_mask(base_binary.astype(numpy.float32), dilate_amount) > 0.5).astype(numpy.uint8)
 	if blur_amount <= 0:
-		return mask.clip(0, 1).astype(numpy.float32)
-	mask_width = mask.shape[1]
-	blur_sigma = max(1.0, mask_width * 0.5 * blur_amount)
-	mask = cv2.GaussianBlur(mask.astype(numpy.float32), (0, 0), blur_sigma)
-	return mask.clip(0, 1).astype(numpy.float32)
+		return dilated_binary.astype(numpy.float32)
+
+	distance_from_base = cv2.distanceTransform(1 - base_binary, cv2.DIST_L2, 5)
+	distance_to_outer = cv2.distanceTransform(dilated_binary, cv2.DIST_L2, 5)
+	ring_mask = numpy.logical_and(dilated_binary == 1, base_binary == 0)
+	ring_ratio = distance_to_outer / numpy.maximum(distance_to_outer + distance_from_base, 1e-6)
+	feather_start = max(0.0, 1.0 - float(blur_amount))
+	ring_feather = numpy.clip((ring_ratio - feather_start) / max(float(blur_amount), 1e-6), 0, 1)
+
+	relaxed_mask = numpy.zeros_like(mask, dtype = numpy.float32)
+	relaxed_mask[base_binary == 1] = 1.0
+	relaxed_mask[ring_mask] = ring_feather[ring_mask]
+	return relaxed_mask.clip(0, 1).astype(numpy.float32)
 
 
 def expand_mask_toward_chin(mask : numpy.ndarray, chin_expand : int) -> numpy.ndarray:
