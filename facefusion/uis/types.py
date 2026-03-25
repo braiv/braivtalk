@@ -31,6 +31,7 @@ ComponentName = Literal\
 	'lip_syncer_model_dropdown',
 	'lip_syncer_pure_motion_slider',
 	'lip_syncer_motion_damping_slider',
+	'lip_syncer_crop_stabilization_slider',
 	'lip_syncer_motion_smoothing_checkbox',
 	'lip_syncer_occlusion_dilate_slider',
 	'lip_syncer_occlusion_blur_slider',

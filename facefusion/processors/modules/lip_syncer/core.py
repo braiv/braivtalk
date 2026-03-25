@@ -13,10 +13,10 @@ from facefusion.audio import read_static_voice
 from facefusion.common_helper import create_float_metavar, create_int_metavar, get_first
 from facefusion.download import conditional_download_hashes, conditional_download_sources, resolve_download_url
 from facefusion.face_analyser import get_many_faces, get_one_face, scale_face
-from facefusion.face_helper import create_bounding_box, paste_back, warp_face_by_bounding_box, warp_face_by_face_landmark_5
+from facefusion.face_helper import create_bounding_box, estimate_matrix_by_face_landmark_5, paste_back, warp_face_by_bounding_box
 from facefusion.face_masker import create_area_mask, create_box_mask, create_occlusion_mask, create_region_mask
 from facefusion.face_selector import select_faces
-from facefusion.filesystem import filter_audio_paths, has_audio, resolve_relative_path
+from facefusion.filesystem import filter_audio_paths, has_audio, is_video, resolve_relative_path
 from facefusion.processors.live_portrait import create_rotation, limit_expression
 from facefusion.processors.modules.lip_syncer import choices as lip_syncer_choices
 from facefusion.processors.modules.lip_syncer.types import LipSyncerInputs, LipSyncerMotionMaskMode, LipSyncerWeight
@@ -24,6 +24,7 @@ from facefusion.processors.types import LivePortraitExpression, LivePortraitFeat
 from facefusion.program_helper import find_argument_group
 from facefusion.thread_helper import conditional_thread_semaphore, thread_semaphore
 from facefusion.types import ApplyStateItem, Args, AudioFrame, BoundingBox, DownloadScope, DownloadSet, Face, InferencePool, ModelOptions, ModelSet, ProcessMode, VisionFrame
+from facefusion.temp_helper import get_temp_frames_pattern
 from facefusion.vision import read_static_image, read_static_video_frame
 
 DRIVER_SMOOTH_SECONDS = 0.08
@@ -34,6 +35,8 @@ DRIVER_VARIANCE_RESTORE_MAX = 2.0
 DRIVER_LIP_TIMING_BLEND = 0.35
 _driver_expression_lock = Lock()
 _driver_expression_cache : Dict[str, List[LivePortraitExpression]] = {}
+_crop_frame_face_cache_lock = Lock()
+_crop_frame_face_cache : Dict[str, List[Face]] = {}
 
 
 @lru_cache()
@@ -238,6 +241,7 @@ def clear_inference_pool() -> None:
 	inference_manager.clear_inference_pool(__name__, [ lip_syncer_model ])
 	inference_manager.clear_inference_pool(__name__, [ lip_syncer_model, 'live_portrait' ])
 	clear_driver_expression_cache()
+	clear_crop_frame_face_cache()
 
 
 @lru_cache(maxsize = 1)
@@ -263,6 +267,7 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'wav2lip_gan_96'), choices = lip_syncer_choices.lip_syncer_models)
 		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
 		group_processors.add_argument('--lip-syncer-motion-damping', help = translator.get('help.motion_damping', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_motion_damping', '0.0'), choices = lip_syncer_choices.lip_syncer_motion_damping_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_motion_damping_range))
+		group_processors.add_argument('--lip-syncer-crop-stabilization', help = translator.get('help.crop_stabilization', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_crop_stabilization', '0.0'), choices = lip_syncer_choices.lip_syncer_crop_stabilization_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_crop_stabilization_range))
 		group_processors.add_argument('--lip-syncer-motion-smoothing', help = translator.get('help.motion_smoothing', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_smoothing', 'False'))
 		group_processors.add_argument('--lip-syncer-motion-mask-mode', help = translator.get('help.motion_mask_mode', __package__), default = config.get_str_value('processors', 'lip_syncer_motion_mask_mode', 'hybrid'), choices = lip_syncer_choices.lip_syncer_motion_mask_modes)
 		group_processors.add_argument('--lip-syncer-mask-blur', help = translator.get('help.mask_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_mask_blur', '0.3'), choices = lip_syncer_choices.lip_syncer_mask_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_mask_blur_range))
@@ -273,13 +278,14 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-occlusion-blur', help = translator.get('help.occlusion_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_occlusion_blur', '0.0'), choices = lip_syncer_choices.lip_syncer_occlusion_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_occlusion_blur_range))
 		group_processors.add_argument('--lip-syncer-expressiveness', help = translator.get('help.expressiveness', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_expressiveness', '1.0'), choices = lip_syncer_choices.lip_syncer_expressiveness_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_expressiveness_range))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_damping', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_damping', 'lip_syncer_crop_stabilization', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('lip_syncer_model', args.get('lip_syncer_model'))
 	apply_state_item('lip_syncer_pure_motion', args.get('lip_syncer_pure_motion'))
 	apply_state_item('lip_syncer_motion_damping', args.get('lip_syncer_motion_damping'))
+	apply_state_item('lip_syncer_crop_stabilization', args.get('lip_syncer_crop_stabilization'))
 	apply_state_item('lip_syncer_motion_smoothing', args.get('lip_syncer_motion_smoothing'))
 	apply_state_item('lip_syncer_motion_mask_mode', args.get('lip_syncer_motion_mask_mode'))
 	apply_state_item('lip_syncer_mask_blur', args.get('lip_syncer_mask_blur'))
@@ -312,6 +318,7 @@ def post_process() -> None:
 	read_static_video_frame.cache_clear()
 	read_static_voice.cache_clear()
 	clear_driver_expression_cache()
+	clear_crop_frame_face_cache()
 	video_manager.clear_video_pool()
 	if state_manager.get_item('video_memory_strategy') in [ 'strict', 'moderate' ]:
 		clear_inference_pool()
@@ -334,6 +341,12 @@ def has_motion_smoothing() -> bool:
 	return has_pure_motion() and bool(state_manager.get_item('lip_syncer_motion_smoothing'))
 
 
+def get_crop_stabilization_amount() -> float:
+	if not has_pure_motion():
+		return 0.0
+	return max(0.0, min(1.0, state_manager.get_item('lip_syncer_crop_stabilization') or 0.0))
+
+
 def get_motion_mask_mode() -> LipSyncerMotionMaskMode:
 	if not has_pure_motion():
 		return 'off'
@@ -348,9 +361,102 @@ def clear_driver_expression_cache() -> None:
 		_driver_expression_cache.clear()
 
 
-def sync_lip(target_face : Face, source_voice_frame : AudioFrame, temp_vision_frame : VisionFrame, frame_number : int = 0, debug_mask : bool = False) -> VisionFrame:
+def clear_crop_frame_face_cache() -> None:
+	with _crop_frame_face_cache_lock:
+		_crop_frame_face_cache.clear()
+
+
+def stabilize_crop_face_landmark_5(target_face : Face, target_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, frame_number : int = 0):
+	crop_stabilization = get_crop_stabilization_amount()
+	face_landmark_5 = target_face.landmark_set.get('5/68').astype(numpy.float32)
+	if crop_stabilization <= 0:
+		return face_landmark_5
+
+	neighbor_landmarks = []
+	for frame_offset in [ -1, 1 ]:
+		neighbor_face = get_adjacent_target_face(target_face, target_vision_frame, temp_vision_frame, frame_number, frame_offset)
+		if neighbor_face is not None:
+			neighbor_landmarks.append(neighbor_face.landmark_set.get('5/68').astype(numpy.float32))
+
+	if not neighbor_landmarks:
+		return face_landmark_5
+
+	temporal_landmarks = face_landmark_5 * 0.5
+	neighbor_weight = 0.5 / len(neighbor_landmarks)
+	for neighbor_landmark_5 in neighbor_landmarks:
+		temporal_landmarks += neighbor_landmark_5 * neighbor_weight
+
+	return face_landmark_5 * (1 - crop_stabilization) + temporal_landmarks * crop_stabilization
+
+
+def get_adjacent_target_face(target_face : Face, target_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, frame_number : int, frame_offset : int) -> Face:
+	adjacent_vision_frame, frame_cache_key = get_adjacent_target_frame(target_vision_frame, frame_number, frame_offset)
+	if adjacent_vision_frame is None or frame_cache_key is None:
+		return None
+
+	adjacent_faces = get_faces_for_crop_stabilization_frame(adjacent_vision_frame, frame_cache_key)
+	return find_closest_face(target_face, adjacent_faces, adjacent_vision_frame, temp_vision_frame)
+
+
+def get_adjacent_target_frame(target_vision_frame : VisionFrame, frame_number : int, frame_offset : int) -> Tuple[VisionFrame, str]:
+	target_path = state_manager.get_item('target_path')
+	adjacent_frame_number = max(0, frame_number + frame_offset)
+	if has_matching_temp_frame_context(target_path, target_vision_frame, frame_number):
+		adjacent_frame_path = get_temp_frames_pattern(target_path, str(adjacent_frame_number + 1).zfill(8))
+		adjacent_vision_frame = read_static_image(adjacent_frame_path)
+		if adjacent_vision_frame is not None:
+			return adjacent_vision_frame, 'temp:' + target_path + ':' + str(adjacent_frame_number)
+	if is_video(target_path):
+		adjacent_vision_frame = read_static_video_frame(target_path, adjacent_frame_number)
+		if adjacent_vision_frame is not None:
+			return adjacent_vision_frame, 'video:' + target_path + ':' + str(adjacent_frame_number)
+	return None, None
+
+
+def has_matching_temp_frame_context(target_path : str, target_vision_frame : VisionFrame, frame_number : int) -> bool:
+	current_frame_path = get_temp_frames_pattern(target_path, str(frame_number + 1).zfill(8))
+	current_temp_vision_frame = read_static_image(current_frame_path)
+	if current_temp_vision_frame is None or current_temp_vision_frame.shape[:2] != target_vision_frame.shape[:2]:
+		return False
+	return numpy.mean(numpy.abs(current_temp_vision_frame.astype(numpy.float32) - target_vision_frame.astype(numpy.float32))) < 1.0
+
+
+def get_faces_for_crop_stabilization_frame(vision_frame : VisionFrame, frame_cache_key : str) -> List[Face]:
+	with _crop_frame_face_cache_lock:
+		if frame_cache_key not in _crop_frame_face_cache:
+			_crop_frame_face_cache[frame_cache_key] = get_many_faces([ vision_frame ])
+		return _crop_frame_face_cache[frame_cache_key]
+
+
+def find_closest_face(target_face : Face, candidate_faces : List[Face], source_vision_frame : VisionFrame, temp_vision_frame : VisionFrame) -> Face:
+	if not candidate_faces:
+		return None
+
+	target_bounding_box = target_face.bounding_box.astype(numpy.float32)
+	target_center = (target_bounding_box[:2] + target_bounding_box[2:]) / 2
+	target_size = target_bounding_box[2:] - target_bounding_box[:2]
+	best_face = None
+	best_score = None
+
+	for candidate_face in candidate_faces:
+		scaled_candidate_face = scale_face(candidate_face, source_vision_frame, temp_vision_frame)
+		candidate_bounding_box = scaled_candidate_face.bounding_box.astype(numpy.float32)
+		candidate_center = (candidate_bounding_box[:2] + candidate_bounding_box[2:]) / 2
+		candidate_size = candidate_bounding_box[2:] - candidate_bounding_box[:2]
+		center_distance = numpy.linalg.norm(candidate_center - target_center)
+		size_distance = numpy.linalg.norm(candidate_size - target_size)
+		score = center_distance + size_distance * 0.25
+		if best_score is None or score < best_score:
+			best_score = score
+			best_face = scaled_candidate_face
+	return best_face
+
+
+def sync_lip(target_face : Face, source_voice_frame : AudioFrame, target_vision_frame : VisionFrame, temp_vision_frame : VisionFrame, frame_number : int = 0, debug_mask : bool = False) -> VisionFrame:
 	source_voice_frame = prepare_audio_frame(source_voice_frame)
-	crop_vision_frame, affine_matrix = warp_face_by_face_landmark_5(temp_vision_frame, target_face.landmark_set.get('5/68'), 'ffhq_512', (512, 512))
+	face_landmark_5 = stabilize_crop_face_landmark_5(target_face, target_vision_frame, temp_vision_frame, frame_number)
+	affine_matrix = estimate_matrix_by_face_landmark_5(face_landmark_5, 'ffhq_512', (512, 512))
+	crop_vision_frame = cv2.warpAffine(temp_vision_frame, affine_matrix, (512, 512), borderMode = cv2.BORDER_REPLICATE, flags = cv2.INTER_AREA)
 	crop_masks = create_occlusion_masks(crop_vision_frame)
 
 	if has_pure_motion():
@@ -888,6 +994,6 @@ def process_frame(inputs : LipSyncerInputs) -> ProcessorOutputs:
 	if target_faces:
 		for target_face in target_faces:
 			target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
-			temp_vision_frame = sync_lip(target_face, source_voice_frame, temp_vision_frame, frame_number, debug_mask)
+			temp_vision_frame = sync_lip(target_face, source_voice_frame, target_vision_frame, temp_vision_frame, frame_number, debug_mask)
 
 	return temp_vision_frame, temp_vision_mask
