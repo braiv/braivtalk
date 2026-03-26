@@ -85,7 +85,10 @@ SAVEABLE_CONFIG_OPTIONS : Dict[str, List[str]] =\
 		'lip_syncer_occlusion_dilate',
 		'lip_syncer_occlusion_blur',
 		'lip_syncer_expressiveness',
-		'lip_syncer_weight'
+		'lip_syncer_weight',
+		'ditto_source_mode',
+		'ditto_backend',
+		'ditto_render_mode'
 	],
 	'uis':
 	[

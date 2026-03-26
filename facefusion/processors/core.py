@@ -17,7 +17,7 @@ PROCESSORS_METHODS =\
 	'post_process',
 	'process_frame'
 ]
-AVAILABLE_PROCESSORS = [ 'lip_syncer', 'face_enhancer' ]
+AVAILABLE_PROCESSORS = [ 'lip_syncer', 'face_enhancer', 'ditto' ]
 
 
 def load_processor_module(processor : str) -> Any:

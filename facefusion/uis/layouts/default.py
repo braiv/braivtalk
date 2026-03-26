@@ -1,7 +1,7 @@
 import gradio
 
 from facefusion import state_manager
-from facefusion.uis.components import about, common_options, download, execution, execution_thread_count, face_detector, face_enhancer_options, face_landmarker, face_masker, face_selector, instant_runner, job_manager, job_runner, lip_syncer_options, memory, output, output_options, preview, preview_options, processors, source, target, temp_frame, terminal, trim_frame, ui_workflow, voice_extractor
+from facefusion.uis.components import about, common_options, ditto_options, download, execution, execution_thread_count, face_detector, face_enhancer_options, face_landmarker, face_masker, face_selector, instant_runner, job_manager, job_runner, lip_syncer_options, memory, output, output_options, preview, preview_options, processors, source, target, temp_frame, terminal, trim_frame, ui_workflow, voice_extractor
 
 
 def pre_check() -> bool:
@@ -20,6 +20,8 @@ def render() -> gradio.Blocks:
 					face_enhancer_options.render()
 				with gradio.Blocks():
 					lip_syncer_options.render()
+				with gradio.Blocks():
+					ditto_options.render()
 				with gradio.Blocks():
 					voice_extractor.render()
 				with gradio.Blocks():
@@ -70,6 +72,7 @@ def listen() -> None:
 	processors.listen()
 	face_enhancer_options.listen()
 	lip_syncer_options.listen()
+	ditto_options.listen()
 	execution.listen()
 	execution_thread_count.listen()
 	download.listen()
