@@ -13,8 +13,9 @@ DittoInputs = TypedDict('DittoInputs',
 	'target_vision_frame' : VisionFrame,
 	'temp_vision_frame' : VisionFrame,
 	'temp_vision_mask' : Mask,
-	'frame_number' : int
-})
+	'frame_number' : int,
+	'debug_mask' : bool
+}, total = False)
 
 DittoSourceMode = Literal['video_native', 'image_anchor']
 DittoBackend = Literal['onnx', 'trt', 'pytorch']

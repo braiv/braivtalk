@@ -1,6 +1,6 @@
 from argparse import ArgumentParser
 from functools import lru_cache
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy
@@ -9,7 +9,7 @@ import facefusion.jobs.job_manager
 import facefusion.jobs.job_store
 from facefusion import config, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, logger, state_manager, translator, video_manager
 from facefusion.common_helper import get_first
-from facefusion.face_analyser import scale_face
+from facefusion.face_analyser import get_many_faces, scale_face
 from facefusion.face_selector import select_faces
 from facefusion.filesystem import filter_audio_paths, has_audio, in_directory, is_image, is_video, resolve_relative_path
 from facefusion.processors.modules.ditto import choices as ditto_choices
@@ -29,6 +29,7 @@ DITTO_MODEL_DIR = resolve_relative_path('../.assets/models/ditto')
 _PIPELINE_CACHE_KEY : Optional[str] = None
 _PIPELINE_FAILED : bool = False
 _PIPELINE_LOCK = threading.Lock()
+_PROCESS_LOCK = threading.Lock()
 
 
 def get_inference_pool() -> InferencePool:
@@ -100,23 +101,48 @@ def _build_cache_key() -> str:
 					 str(state_manager.get_item('ditto_backend'))])
 
 
-def _load_target_frames(target_path : str, max_frames : int = 500) -> List:
-	"""Load RGB frames from a video or image for Ditto avatar registration."""
+def _load_target_frames(target_path : str, max_frames : int = 500) -> Dict[str, Any]:
+	"""Load RGB frames sampled across the full target timeline for avatar registration."""
 	if is_image(target_path):
 		img = cv2.imread(target_path)
 		if img is None:
-			return []
-		return [cv2.cvtColor(img, cv2.COLOR_BGR2RGB)]
+			return {'frames': [], 'frame_numbers': [], 'total_frames': 0}
+		return {
+			'frames': [cv2.cvtColor(img, cv2.COLOR_BGR2RGB)],
+			'frame_numbers': [0],
+			'total_frames': 1
+		}
 
 	cap = cv2.VideoCapture(target_path)
+	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 	frames = []
-	while cap.isOpened() and len(frames) < max_frames:
+	frame_numbers = []
+	if total_frames > 0 and total_frames > max_frames:
+		sampled_numbers = numpy.unique(
+			numpy.linspace(0, total_frames - 1, num=max_frames, dtype=numpy.int32)
+		).tolist()
+	else:
+		sampled_numbers = None
+	sampled_set = set(sampled_numbers or [])
+	frame_index = 0
+	while cap.isOpened():
 		ret, frame = cap.read()
 		if not ret:
 			break
-		frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+		if sampled_numbers is None or frame_index in sampled_set:
+			frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+			frame_numbers.append(frame_index)
+		frame_index += 1
 	cap.release()
-	return frames
+	if total_frames <= 0:
+		total_frames = frame_index
+	if sampled_numbers is not None and len(frame_numbers) != len(sampled_numbers):
+		logger.warning(f'Ditto loaded {len(frame_numbers)} of {len(sampled_numbers)} sampled frames', __name__)
+	return {
+		'frames': frames,
+		'frame_numbers': frame_numbers,
+		'total_frames': total_frames
+	}
 
 
 def _ensure_pipeline_prepared() -> bool:
@@ -182,8 +208,9 @@ def _prepare_pipeline_locked(cache_key : str) -> bool:
 		_PIPELINE_FAILED = True
 		return False
 
-	print('[ditto] Loading target video frames for avatar registration…')
-	img_rgb_list = _load_target_frames(target_path)
+	print('[ditto] Loading target video frames for avatar registration...')
+	target_frames = _load_target_frames(target_path)
+	img_rgb_list = target_frames.get('frames', [])
 	if not img_rgb_list:
 		logger.error('Failed to load target frames', __name__)
 		_PIPELINE_FAILED = True
@@ -201,20 +228,194 @@ def _prepare_pipeline_locked(cache_key : str) -> bool:
 		_PIPELINE_FAILED = True
 		return False
 
-	DITTO_RUNNER.prepare(img_rgb_list, audio_16k, sampling_timesteps=50)
+	DITTO_RUNNER.prepare(
+		img_rgb_list,
+		audio_16k,
+		source_frame_numbers=target_frames.get('frame_numbers'),
+		source_total_frames=target_frames.get('total_frames'),
+		sampling_timesteps=50
+	)
 	_PIPELINE_CACHE_KEY = cache_key
 	return True
 
 
+def _bbox_center_size(bounding_box) -> tuple[numpy.ndarray, float]:
+	x1, y1, x2, y2 = [ float(v) for v in bounding_box[:4] ]
+	center = numpy.array([(x1 + x2) / 2, (y1 + y2) / 2], dtype = numpy.float32)
+	size = max(x2 - x1, y2 - y1)
+	return center, size
+
+
+def _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number : int) -> Optional[str]:
+	"""Reject clearly unsafe faces before Ditto renders a full face patch.
+
+	This intentionally keeps FaceFusion's normal candidate generation
+	(`select_faces`) but adds a stricter acceptance step because Ditto's
+	full-face putback is much less forgiving than the default lip-sync masks.
+	"""
+	detector_score = float(target_face.score_set.get('detector') or 0.0)
+	landmarker_score = float(target_face.score_set.get('landmarker') or 0.0)
+	min_detector_score = max(float(state_manager.get_item('face_detector_score') or 0.0), 0.70)
+	if detector_score < min_detector_score:
+		return f'detector<{min_detector_score:.2f} ({detector_score:.2f})'
+	min_landmarker_score = max(float(state_manager.get_item('face_landmarker_score') or 0.0), 0.65)
+	if landmarker_score > 0 and landmarker_score < min_landmarker_score:
+		return f'landmarker<{min_landmarker_score:.2f} ({landmarker_score:.2f})'
+
+	frame_h, frame_w = temp_vision_frame.shape[:2]
+	_, bbox_size = _bbox_center_size(target_face.bounding_box)
+	bbox_area = (target_face.bounding_box[2] - target_face.bounding_box[0]) * (target_face.bounding_box[3] - target_face.bounding_box[1])
+	frame_area = max(frame_h * frame_w, 1)
+	area_ratio = float(bbox_area) / float(frame_area)
+	if area_ratio < 0.005 or area_ratio > 0.20:
+		return f'area_ratio={area_ratio:.4f}'
+
+	if DITTO_RUNNER is not None and DITTO_RUNNER.is_prepared:
+		expected_hint = DITTO_RUNNER.get_expected_face_hint(frame_number)
+		if expected_hint:
+			expected_center = numpy.asarray(expected_hint.get('center'), dtype = numpy.float32)
+			expected_size = float(expected_hint.get('size') or 0.0)
+			current_center, current_size = _bbox_center_size(target_face.bounding_box)
+			if expected_size > 1e-3 and current_size > 1e-3:
+				center_penalty = float(numpy.linalg.norm(current_center - expected_center)) / max(expected_size, current_size, 1.0)
+				size_ratio = current_size / expected_size
+				if center_penalty > 1.4 or size_ratio < 0.35 or size_ratio > 2.5:
+					return f'hint_mismatch d={center_penalty:.2f} size={size_ratio:.2f}'
+
+	return None
+
+
+def _is_safe_ditto_face(target_face, temp_vision_frame, frame_number : int) -> bool:
+	return _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number) is None
+
+
+def _draw_face_box(debug_frame, target_face, color, label : str) -> None:
+	x1, y1, x2, y2 = [ int(v) for v in target_face.bounding_box[:4] ]
+	cv2.rectangle(debug_frame, (x1, y1), (x2, y2), color, 2)
+	cv2.putText(debug_frame, label, (x1, max(20, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+
+def _draw_landmarks(debug_frame, landmarks, color) -> None:
+	if landmarks is None:
+		return
+	for point in landmarks.astype(numpy.int32):
+		cv2.circle(debug_frame, tuple(point[:2]), 1, color, -1)
+
+
+def _draw_expected_hint(debug_frame, frame_number : int) -> None:
+	if DITTO_RUNNER is None or not DITTO_RUNNER.is_prepared:
+		return
+	expected_hint = DITTO_RUNNER.get_expected_face_hint(frame_number)
+	if not expected_hint:
+		return
+	center = numpy.asarray(expected_hint.get('center'), dtype = numpy.float32)
+	size = float(expected_hint.get('size') or 0.0)
+	if center.size < 2 or size <= 0:
+		return
+	cx, cy = int(center[0]), int(center[1])
+	half = int(size / 2)
+	cv2.rectangle(debug_frame, (cx - half, cy - half), (cx + half, cy + half), (255, 0, 255), 2)
+	cv2.circle(debug_frame, (cx, cy), 4, (255, 0, 255), -1)
+	cv2.putText(debug_frame, 'expected', (cx - half, max(20, cy - half - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2, cv2.LINE_AA)
+
+
+def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = None, selected_faces = None, selected_face = None, rejection_reason : Optional[str] = None):
+	debug_frame = target_vision_frame[:, :, :3].copy()
+	raw_faces = raw_faces or []
+	selected_faces = selected_faces or []
+	status_lines = [
+		f'frame={frame_number}',
+		f'raw_faces={len(raw_faces)}',
+		f'selected_faces={len(selected_faces)}'
+	]
+
+	_draw_expected_hint(debug_frame, frame_number)
+
+	for index, face in enumerate(raw_faces):
+		_draw_face_box(debug_frame, face, (0, 255, 255), f'raw[{index}] d={float(face.score_set.get("detector") or 0.0):.2f}')
+
+	for index, face in enumerate(selected_faces):
+		_draw_face_box(debug_frame, face, (255, 255, 0), f'selected[{index}]')
+
+	if selected_face is not None:
+		label = 'accepted'
+		color = (0, 200, 0)
+		if rejection_reason:
+			label = f'rejected: {rejection_reason}'
+			color = (0, 0, 255)
+		_draw_face_box(debug_frame, selected_face, color, label)
+		_draw_landmarks(debug_frame, selected_face.landmark_set.get('68'), color)
+		detector_score = float(selected_face.score_set.get('detector') or 0.0)
+		landmarker_score = float(selected_face.score_set.get('landmarker') or 0.0)
+		status_lines.append(f'det={detector_score:.2f} lmk={landmarker_score:.2f}')
+	else:
+		status_lines.append('selected_face=None')
+
+	if rejection_reason:
+		status_lines.append(rejection_reason)
+	elif selected_face is not None:
+		status_lines.append('safety_gate=pass')
+	else:
+		status_lines.append('selection=none')
+
+	for index, line in enumerate(status_lines):
+		cv2.putText(debug_frame, line, (12, 28 + index * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 3, cv2.LINE_AA)
+		cv2.putText(debug_frame, line, (12, 28 + index * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+	return debug_frame
+
+
 def process_frame(inputs : DittoInputs) -> ProcessorOutputs:
+	reference_vision_frame = inputs.get('reference_vision_frame')
+	target_vision_frame = inputs.get('target_vision_frame')
 	temp_vision_frame = inputs.get('temp_vision_frame')
 	temp_vision_mask = inputs.get('temp_vision_mask')
 	frame_number = inputs.get('frame_number', 0)
+	debug_mask = inputs.get('debug_mask', False)
 
 	if not _ensure_pipeline_prepared():
+		if debug_mask:
+			return _create_debug_frame(target_vision_frame, frame_number), temp_vision_mask
 		return temp_vision_frame, temp_vision_mask
 
-	result_rgb = DITTO_RUNNER.process_frame(frame_number)
+	raw_faces = get_many_faces([ target_vision_frame ]) if debug_mask else []
+	target_faces = select_faces(reference_vision_frame, target_vision_frame)
+	if not target_faces:
+		if debug_mask:
+			return _create_debug_frame(target_vision_frame, frame_number, raw_faces = raw_faces, selected_faces = target_faces), temp_vision_mask
+		return temp_vision_frame, temp_vision_mask
+
+	selected_face = target_faces[0]
+	target_face = scale_face(selected_face, target_vision_frame, temp_vision_frame)
+	rejection_reason = _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number)
+	if debug_mask:
+		return _create_debug_frame(
+			target_vision_frame,
+			frame_number,
+			raw_faces = raw_faces,
+			selected_faces = target_faces,
+			selected_face = selected_face,
+			rejection_reason = rejection_reason
+		), temp_vision_mask
+	if rejection_reason:
+		return temp_vision_frame, temp_vision_mask
+	current_frame_rgb = cv2.cvtColor(target_vision_frame[:, :, :3], cv2.COLOR_BGR2RGB)
+	current_bbox = target_face.bounding_box.astype(numpy.float32)
+	current_landmarks = target_face.landmark_set.get('68')
+	if current_landmarks is None:
+		current_landmarks = target_face.landmark_set.get('5/68')
+	if current_landmarks is not None:
+		current_landmarks = current_landmarks.astype(numpy.float32)
+
+	# Ditto's render path uses heavyweight GPU ops and live face analysis.
+	# FaceFusion processes video frames in parallel, so guard Ditto to avoid
+	# overlapping allocations and out-of-order state issues.
+	with _PROCESS_LOCK:
+		result_rgb = DITTO_RUNNER.process_frame(
+			frame_number,
+			current_frame_rgb=current_frame_rgb,
+			current_bbox=current_bbox,
+			current_landmarks=current_landmarks
+		)
 	if result_rgb is None:
 		return temp_vision_frame, temp_vision_mask
 

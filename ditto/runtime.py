@@ -120,14 +120,21 @@ class DittoRunner:
 	def num_output_frames(self) -> int:
 		return self._num_output_frames
 
+	def get_expected_face_hint(self, frame_number : int) -> Optional[Dict[str, NDArray]]:
+		if self._pipeline is None or not self._prepared:
+			return None
+		return self._pipeline.get_expected_face_hint(frame_number)
+
 	def ensure_models(self) -> bool:
 		"""Download models if they don't exist. Returns True if all present."""
 		if check_models(self._model_dir):
 			return True
-		print(f'[ditto] Models not found in {self._model_dir}, downloading…')
+		print(f'[ditto] Models not found in {self._model_dir}, downloading...')
 		return download_models(self._model_dir)
 
 	def prepare(self, img_rgb_list : List[NDArray], audio_16k : NDArray,
+				source_frame_numbers : Optional[List[int]] = None,
+				source_total_frames : Optional[int] = None,
 				sampling_timesteps : int = 50, emo : int = 4) -> int:
 		"""Load models and pre-compute all motion from source + audio.
 
@@ -143,19 +150,29 @@ class DittoRunner:
 		self._pipeline.load_models()
 		self._num_output_frames = self._pipeline.prepare(
 			img_rgb_list, audio_16k,
+			source_frame_numbers=source_frame_numbers,
+			source_total_frames=source_total_frames,
 			sampling_timesteps=sampling_timesteps, emo=emo,
 		)
 		self._prepared = True
 		return self._num_output_frames
 
-	def process_frame(self, frame_number : int = 0) -> Optional[NDArray]:
+	def process_frame(self, frame_number : int = 0,
+					current_frame_rgb : Optional[NDArray] = None,
+					current_bbox : Optional[NDArray] = None,
+					current_landmarks : Optional[NDArray] = None) -> Optional[NDArray]:
 		"""Render a single output frame using pre-computed motion.
 
 		Returns composited RGB frame or None.
 		"""
 		if not self._prepared or self._pipeline is None:
 			return None
-		return self._pipeline.render_frame(frame_number)
+		return self._pipeline.render_frame(
+			frame_number,
+			current_frame_rgb=current_frame_rgb,
+			current_bbox=current_bbox,
+			current_landmarks=current_landmarks
+		)
 
 	def teardown(self) -> None:
 		if self._pipeline is not None:

@@ -2,7 +2,9 @@
 Ditto TalkingHead ONNX inference pipeline.
 
 Adapted from antgroup/ditto-talkinghead reference implementation.
-All inference is pure ONNX + NumPy (no PyTorch/TensorRT required at runtime).
+Inference is primarily ONNX + NumPy, with an optional PyTorch fallback
+for the warp network on platforms where ONNX Runtime cannot execute
+Ditto's 5-D grid sampling path.
 
 Pipeline stages:
   1. Avatar registration: face detect → crop → appearance + motion extraction
@@ -15,6 +17,7 @@ Pipeline stages:
 import copy
 import math
 import os
+import sys
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +29,8 @@ from tqdm import tqdm
 
 
 HUGGINGFACE_BASE = 'https://huggingface.co/digital-avatar/ditto-talkinghead/resolve/main/ditto_onnx'
+HUGGINGFACE_PYTORCH_BASE = 'https://huggingface.co/digital-avatar/ditto-talkinghead/resolve/main/ditto_pytorch/models'
+REFERENCE_REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reference-repos', 'ditto-talkinghead'))
 
 REQUIRED_ONNX_MODELS = [
     'insightface_det',
@@ -59,6 +64,22 @@ def _get_providers():
     return ONNX_PROVIDERS
 
 
+def _provider_name(provider: Any) -> str:
+    return provider[0] if isinstance(provider, tuple) else provider
+
+
+def _has_cuda_provider() -> bool:
+    return any(_provider_name(provider) == 'CUDAExecutionProvider' for provider in _get_providers())
+
+
+def _should_use_pytorch_warp() -> bool:
+    force = os.environ.get('DITTO_FORCE_PYTORCH_WARP')
+    if force is not None:
+        return force == '1'
+    # ORT on Windows does not support Ditto's 5-D GridSample path.
+    return os.name == 'nt'
+
+
 def _create_session(model_path: str):
     import onnxruntime
     return onnxruntime.InferenceSession(model_path, providers=_get_providers())
@@ -89,7 +110,7 @@ def download_models(model_dir: str, progress: bool = True) -> bool:
             if os.path.isfile(local_path):
                 continue
             url = f'{HUGGINGFACE_BASE}/{name}.onnx'
-            print(f'[ditto] Downloading {name}.onnx …')
+            print(f'[ditto] Downloading {name}.onnx ...')
             try:
                 if progress:
                     _download_with_progress(url, local_path)
@@ -105,6 +126,22 @@ def download_models(model_dir: str, progress: bool = True) -> bool:
                         pass
                 all_ok = False
         return all_ok
+
+
+def ensure_pytorch_warp_checkpoint(model_dir: str, progress: bool = True) -> str:
+    lock = _get_download_lock()
+    with lock:
+        os.makedirs(model_dir, exist_ok=True)
+        local_path = os.path.join(model_dir, 'warp_network.pth')
+        if os.path.isfile(local_path):
+            return local_path
+        url = f'{HUGGINGFACE_PYTORCH_BASE}/warp_network.pth'
+        print('[ditto] Downloading warp_network.pth ...')
+        if progress:
+            _download_with_progress(url, local_path)
+        else:
+            urllib.request.urlretrieve(url, local_path)
+        return local_path
 
 
 def _download_with_progress(url: str, dest: str):
@@ -137,7 +174,7 @@ def _download_with_progress(url: str, dest: str):
             return
         except OSError:
             time.sleep(1.0 * (attempt + 1))
-    raise OSError(f'Could not rename {tmp} → {dest} after 5 attempts')
+    raise OSError(f'Could not rename {tmp} -> {dest} after 5 attempts')
 
 
 def check_models(model_dir: str) -> bool:
@@ -203,8 +240,32 @@ def _parse_pt2_from_pt203(pt203, use_lip=True):
     return np.stack([pt_left_eye, pt_right_eye], axis=0)
 
 
+def _parse_pt2_from_pt68(pt68, use_lip=True):
+    pt_left_eye = np.mean(pt68[36:42], axis=0)
+    pt_right_eye = np.mean(pt68[42:48], axis=0)
+    if use_lip:
+        pt_center_eye = (pt_left_eye + pt_right_eye) / 2
+        pt_center_lip = (pt68[62] + pt68[66]) / 2
+        return np.stack([pt_center_eye, pt_center_lip], axis=0)
+    return np.stack([pt_left_eye, pt_right_eye], axis=0)
+
+
+def _parse_pt2_from_pt5(pt5, use_lip=True):
+    pt_left_eye = pt5[0]
+    pt_right_eye = pt5[1]
+    if use_lip and pt5.shape[0] >= 5:
+        pt_center_eye = (pt_left_eye + pt_right_eye) / 2
+        pt_center_lip = (pt5[3] + pt5[4]) / 2
+        return np.stack([pt_center_eye, pt_center_lip], axis=0)
+    return np.stack([pt_left_eye, pt_right_eye], axis=0)
+
+
 def _parse_pt2(pts, use_lip=True):
     n = pts.shape[0]
+    if n == 5:
+        return _parse_pt2_from_pt5(pts, use_lip)
+    if n == 68:
+        return _parse_pt2_from_pt68(pts, use_lip)
     if n == 106:
         return _parse_pt2_from_pt106(pts, use_lip)
     if n == 203:
@@ -267,6 +328,11 @@ def crop_image(img, pts, **kw):
     M_o2c = np.vstack([M_INV, np.array([0, 0, 1], dtype=np.float32)])
     M_c2o = np.linalg.inv(M_o2c)
     return {'img_crop': img_crop, 'M_o2c': M_o2c, 'M_c2o': M_c2o}
+
+
+def _landmark_center_size(pts: NDArray) -> Tuple[NDArray, float]:
+    center, size, _ = _parse_rect_from_landmark(pts, scale=1.0, vx_ratio=0, vy_ratio=0)
+    return center.astype(np.float32), float(size[0])
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +906,17 @@ class WarpNetworkONNX:
         })[0]
 
 
+class WarpNetworkPyTorch:
+    def __init__(self, model_path: str, device: str = 'cuda'):
+        if REFERENCE_REPO_DIR not in sys.path:
+            sys.path.insert(0, REFERENCE_REPO_DIR)
+        from core.models.warp_network import WarpNetwork as ReferenceWarpNetwork
+        self.model = ReferenceWarpNetwork(model_path, device=device)
+
+    def __call__(self, feature_3d: NDArray, kp_source: NDArray, kp_driving: NDArray) -> NDArray:
+        return self.model(feature_3d, kp_source, kp_driving)
+
+
 # ---------------------------------------------------------------------------
 # Decoder (ONNX)
 # ---------------------------------------------------------------------------
@@ -996,12 +1073,18 @@ class Source2Info:
         rgb_256 = cv2.resize(img_crop_rgb, (256, 256), interpolation=cv2.INTER_AREA)
         return (rgb_256.astype(np.float32) / 255.0)[None].transpose(0, 3, 1, 2)
 
-    def _crop(self, img_rgb, last_lmk=None, **kw):
-        if last_lmk is None:
+    def _crop(self, img_rgb, last_lmk=None, bbox_hint=None, landmark_hint=None, **kw):
+        det_score = None
+        if landmark_hint is not None:
+            lmk_for_track = landmark_hint.astype(np.float32)
+        elif bbox_hint is not None:
+            lmk_for_track = self.lmk106.get(img_rgb, bbox_hint)
+        elif last_lmk is None:
             det, _ = self.face_det.detect(img_rgb)
             if len(det) == 0:
                 return None
             boxes = det[np.argsort(-(det[:, 2] - det[:, 0]) * (det[:, 3] - det[:, 1]))]
+            det_score = float(boxes[0][4])
             lmk_for_track = self.lmk106.get(img_rgb, boxes[0])
         else:
             lmk_for_track = last_lmk
@@ -1015,24 +1098,27 @@ class Source2Info:
                          vx_ratio=kw.get('crop_vx_ratio', 0),
                          vy_ratio=kw.get('crop_vy_ratio', -0.125),
                          flag_do_rot=kw.get('crop_flag_do_rot', True))
-        return ret['img_crop'], ret['M_c2o'], lmk203
+        return ret['img_crop'], ret['M_o2c'], ret['M_c2o'], lmk203, det_score
 
-    def __call__(self, img_rgb, last_lmk=None, **kw):
-        result = self._crop(img_rgb, last_lmk, **kw)
+    def __call__(self, img_rgb, last_lmk=None, extract_feature=True,
+                 bbox_hint=None, landmark_hint=None, **kw):
+        result = self._crop(img_rgb, last_lmk, bbox_hint=bbox_hint, landmark_hint=landmark_hint, **kw)
         if result is None:
             return None
-        img_crop, M_c2o, lmk203 = result
+        img_crop, M_o2c, M_c2o, lmk203, det_score = result
         rgb_256 = self._img_to_bchw256(img_crop)
         kp_info = self.mot_ext(rgb_256)
-        f_s = self.app_ext(rgb_256)
+        f_s = self.app_ext(rgb_256) if extract_feature else None
+        face_center, face_size = _landmark_center_size(lmk203)
 
         # Default eye values (skipping blaze_face + face_mesh for simplicity)
         eye_open = np.array([[0.8, 0.8]], dtype=np.float32)
         eye_ball = np.zeros((1, 6), dtype=np.float32)
 
         return {
-            'x_s_info': kp_info, 'f_s': f_s, 'M_c2o': M_c2o,
+            'x_s_info': kp_info, 'f_s': f_s, 'M_o2c': M_o2c, 'M_c2o': M_c2o,
             'eye_open': eye_open, 'eye_ball': eye_ball, 'lmk203': lmk203,
+            'face_center': face_center, 'face_size': face_size, 'det_score': det_score,
         }
 
 
@@ -1058,20 +1144,30 @@ def _smooth_x_s_info_lst(info_list, smo_k=13):
 
 
 def register_avatar(source2info: Source2Info, img_rgb_list: List[NDArray],
+                    source_frame_numbers: Optional[List[int]] = None,
+                    source_total_frames: Optional[int] = None,
                     smo_k: int = 13, **crop_kw) -> Dict:
     """Register source avatar from a list of RGB frames."""
     source_info = {
-        'x_s_info_lst': [], 'f_s_lst': [], 'M_c2o_lst': [],
+        'x_s_info_lst': [], 'f_s_lst': [], 'M_o2c_lst': [], 'M_c2o_lst': [],
         'eye_open_lst': [], 'eye_ball_lst': [],
+        'img_rgb_lst': [], 'source_frame_numbers': [],
+        'face_center_lst': [], 'face_size_lst': [],
     }
     last_lmk = None
-    for rgb in tqdm(img_rgb_list, desc='[ditto] Registering avatar'):
+    if source_frame_numbers is None:
+        source_frame_numbers = list(range(len(img_rgb_list)))
+    for frame_number, rgb in zip(source_frame_numbers, img_rgb_list):
         info = source2info(rgb, last_lmk, **crop_kw)
         if info is None:
             continue
-        for k in ['x_s_info', 'f_s', 'M_c2o', 'eye_open', 'eye_ball']:
+        source_info['img_rgb_lst'].append(rgb)
+        source_info['source_frame_numbers'].append(int(frame_number))
+        for k in ['x_s_info', 'f_s', 'M_o2c', 'M_c2o', 'eye_open', 'eye_ball', 'face_center', 'face_size']:
             source_info[f'{k}_lst'].append(info[k])
         last_lmk = info['lmk203']
+    if len(img_rgb_list) != len(source_frame_numbers):
+        raise RuntimeError('Source frame metadata length mismatch')
 
     if not source_info['x_s_info_lst']:
         raise RuntimeError('No face detected in any source frame')
@@ -1080,8 +1176,8 @@ def register_avatar(source2info: Source2Info, img_rgb_list: List[NDArray],
         source_info['x_s_info_lst'] = _smooth_x_s_info_lst(source_info['x_s_info_lst'], smo_k)
 
     source_info['sc'] = source_info['x_s_info_lst'][0]['kp'].flatten()
-    source_info['is_image_flag'] = len(img_rgb_list) == 1
-    source_info['img_rgb_lst'] = img_rgb_list
+    source_info['source_total_frames'] = int(source_total_frames or len(img_rgb_list))
+    source_info['is_image_flag'] = source_info['source_total_frames'] == 1
     return source_info
 
 
@@ -1099,6 +1195,7 @@ class DittoPipeline:
         self.x_d_info_list: Optional[List[Dict]] = None
         self.putback = PutBack()
         self.num_source_frames = 0
+        self.num_output_frames = 0
 
     def load_models(self):
         """Load all ONNX models. Call once after models are downloaded."""
@@ -1111,7 +1208,13 @@ class DittoPipeline:
         self.hubert = HubertONNX(p('hubert'))
         self.lmdm = LMDM_ONNX(p('lmdm_v0.4_hubert'))
         self.stitch_net = StitchNetworkONNX(p('stitch_network'))
-        self.warp_net = WarpNetworkONNX(p('warp_network_ori'))
+        if _should_use_pytorch_warp():
+            warp_path = ensure_pytorch_warp_checkpoint(self.model_dir)
+            warp_device = 'cuda' if _has_cuda_provider() else 'cpu'
+            self.warp_net = WarpNetworkPyTorch(warp_path, device=warp_device)
+            print(f'[ditto] Using PyTorch warp fallback on {warp_device}')
+        else:
+            self.warp_net = WarpNetworkONNX(p('warp_network_ori'))
         self.decoder = DecoderONNX(p('decoder'))
 
         self.source2info = Source2Info(self.face_det, self.lmk106, self.lmk203,
@@ -1123,6 +1226,8 @@ class DittoPipeline:
         print('[ditto] All ONNX models loaded successfully')
 
     def prepare(self, img_rgb_list: List[NDArray], audio_16k: NDArray,
+                source_frame_numbers: Optional[List[int]] = None,
+                source_total_frames: Optional[int] = None,
                 sampling_timesteps: int = 50, emo: int = 4):
         """Pre-compute all motion parameters from source frames + audio.
 
@@ -1136,15 +1241,20 @@ class DittoPipeline:
             raise RuntimeError('Models not loaded. Call load_models() first.')
 
         # 1. Register source avatar
-        self.source_info = register_avatar(self.source2info, img_rgb_list)
+        self.source_info = register_avatar(
+            self.source2info,
+            img_rgb_list,
+            source_frame_numbers=source_frame_numbers,
+            source_total_frames=source_total_frames,
+        )
         self.num_source_frames = len(self.source_info['x_s_info_lst'])
         is_image = self.source_info['is_image_flag']
 
-        # 2. Audio → HuBERT features
-        print('[ditto] Extracting HuBERT audio features…')
+        # 2. Audio -> HuBERT features
+        print('[ditto] Extracting HuBERT audio features...')
         aud_feat = self.wav2feat.wav2feat(audio_16k)
         num_output_frames = len(aud_feat)
-        print(f'[ditto] Audio → {num_output_frames} frames @ 25fps')
+        print(f'[ditto] Audio -> {num_output_frames} frames @ 25fps')
 
         # 3. Setup condition handler
         self.condition_handler.setup(self.source_info, emo=emo,
@@ -1153,7 +1263,7 @@ class DittoPipeline:
         # 4. Build full conditioning sequence
         aud_cond_all = self.condition_handler(aud_feat, 0)
 
-        # 5. Audio → motion via LMDM diffusion
+        # 5. Audio -> motion via LMDM diffusion
         x_s_info_0 = self.condition_handler.x_s_info_0
         self.audio2motion.setup(x_s_info_0, overlap=10,
                                 sampling_timesteps=sampling_timesteps, smo_k=3)
@@ -1161,6 +1271,7 @@ class DittoPipeline:
 
         # 6. Convert to per-frame motion dicts
         self.x_d_info_list = self.audio2motion.cvt_fmt(res_kp_seq)
+        self.num_output_frames = len(self.x_d_info_list)
 
         # 7. Setup motion stitch state for video mode
         x_s_info = self.source_info['x_s_info_lst'][0]
@@ -1183,7 +1294,45 @@ class DittoPipeline:
         print(f'[ditto] Pipeline ready: {num_output_frames} output frames')
         return num_output_frames
 
-    def render_frame(self, frame_number: int) -> Optional[NDArray]:
+    def _get_source_frame_index(self, frame_number: int) -> int:
+        if self.num_source_frames <= 1 or self.source_info is None:
+            return 0
+
+        source_total_frames = int(self.source_info.get('source_total_frames', self.num_source_frames))
+        source_frame_numbers = self.source_info.get('source_frame_numbers') or list(range(self.num_source_frames))
+
+        if self.num_output_frames > 1 and source_total_frames > 1:
+            target_frame_number = int(round(
+                frame_number * (source_total_frames - 1) / (self.num_output_frames - 1)
+            ))
+        else:
+            target_frame_number = min(frame_number, source_total_frames - 1)
+
+        sample_numbers = np.asarray(source_frame_numbers, dtype=np.int32)
+        pos = int(np.searchsorted(sample_numbers, target_frame_number))
+        if pos <= 0:
+            return 0
+        if pos >= len(sample_numbers):
+            return len(sample_numbers) - 1
+
+        prev_idx = pos - 1
+        next_idx = pos
+        prev_dist = abs(int(sample_numbers[prev_idx]) - target_frame_number)
+        next_dist = abs(int(sample_numbers[next_idx]) - target_frame_number)
+        return prev_idx if prev_dist <= next_dist else next_idx
+
+    def get_expected_face_hint(self, frame_number: int) -> Optional[Dict[str, NDArray]]:
+        if self.source_info is None or self.num_source_frames <= 0:
+            return None
+        src_idx = self._get_source_frame_index(frame_number)
+        return {
+            'center': np.asarray(self.source_info['face_center_lst'][src_idx], dtype=np.float32),
+            'size': np.asarray(self.source_info['face_size_lst'][src_idx], dtype=np.float32)
+        }
+
+    def render_frame(self, frame_number: int, current_frame_rgb: Optional[NDArray] = None,
+                     current_bbox: Optional[NDArray] = None,
+                     current_landmarks: Optional[NDArray] = None) -> Optional[NDArray]:
         """Render a single output frame using pre-computed motion.
 
         Args:
@@ -1197,10 +1346,32 @@ class DittoPipeline:
         if frame_number >= len(self.x_d_info_list):
             return None
 
-        # Source frame index (mirror-loop for video)
-        src_idx = _mirror_index(frame_number, self.num_source_frames)
+        # Source frame index mapped across the original video timeline.
+        src_idx = self._get_source_frame_index(frame_number)
         x_s_info = self.source_info['x_s_info_lst'][src_idx]
         x_d_info = self.x_d_info_list[frame_number]
+        frame_rgb = self.source_info['img_rgb_lst'][src_idx]
+        M_o2c = self.source_info['M_o2c_lst'][src_idx]
+        M_c2o = self.source_info['M_c2o_lst'][src_idx]
+        if current_frame_rgb is not None and not self.source_info.get('is_image_flag'):
+            if current_bbox is None and current_landmarks is None:
+                return None
+            # FaceFusion renders frames in parallel, so render-time tracking must be
+            # stateless; otherwise out-of-order frames can smear stale landmarks
+            # across cutaways or re-entries.
+            live_info = self.source2info(
+                current_frame_rgb,
+                None,
+                extract_feature=False,
+                bbox_hint=current_bbox,
+                landmark_hint=current_landmarks
+            )
+            if live_info is None:
+                return None
+            x_s_info = live_info['x_s_info']
+            frame_rgb = current_frame_rgb
+            M_o2c = live_info['M_o2c']
+            M_c2o = live_info['M_c2o']
 
         # Relative motion: driven = source + (driven - d0)
         if self._relative_d and self._d0 is None:
@@ -1237,9 +1408,23 @@ class DittoPipeline:
         # Decode
         render_img = self.decoder(f_3d.astype(np.float32))
 
-        # Putback onto original frame
-        frame_rgb = self.source_info['img_rgb_lst'][src_idx]
-        M_c2o = self.source_info['M_c2o_lst'][src_idx]
+        # Composite onto original frame. For video mode, prefer FaceFusion-style
+        # masked pasteback to constrain failures much more tightly than Ditto's
+        # broad native putback.
+        if current_frame_rgb is not None and not self.source_info.get('is_image_flag'):
+            from facefusion import state_manager
+            from facefusion.face_helper import paste_back
+            from facefusion.face_masker import create_box_mask, create_occlusion_mask
+
+            crop_mask = create_box_mask(
+                render_img.astype(np.uint8),
+                state_manager.get_item('face_mask_blur'),
+                state_manager.get_item('face_mask_padding')
+            )
+            if 'occlusion' in state_manager.get_item('face_mask_types'):
+                crop_mask = np.minimum(crop_mask, create_occlusion_mask(render_img.astype(np.uint8)))
+            return paste_back(frame_rgb, render_img.astype(np.uint8), crop_mask, M_o2c[:2, :])
+
         result = self.putback(frame_rgb, render_img, M_c2o)
         return result
 
