@@ -1,8 +1,9 @@
 from typing import List, Sequence, get_args
 
 from facefusion.common_helper import create_float_range, create_int_range
-from facefusion.processors.modules.lip_syncer.types import LipSyncerModel, LipSyncerMotionMaskMode
+from facefusion.processors.modules.lip_syncer.types import LipSyncerModel, LipSyncerMotionMaskMode, LipSyncerPipeline
 
+lip_syncer_pipelines : List[LipSyncerPipeline] = list(get_args(LipSyncerPipeline))
 lip_syncer_models : List[LipSyncerModel] = list(get_args(LipSyncerModel))
 lip_syncer_motion_mask_modes : List[LipSyncerMotionMaskMode] = list(get_args(LipSyncerMotionMaskMode))
 

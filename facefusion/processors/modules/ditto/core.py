@@ -10,6 +10,7 @@ import facefusion.jobs.job_store
 from facefusion import config, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, logger, state_manager, translator, video_manager
 from facefusion.common_helper import get_first
 from facefusion.face_analyser import get_many_faces, scale_face
+from facefusion.face_helper import estimate_matrix_by_face_landmark_5
 from facefusion.face_selector import select_faces
 from facefusion.filesystem import filter_audio_paths, has_audio, in_directory, is_image, is_video, resolve_relative_path
 from facefusion.processors.modules.ditto import choices as ditto_choices
@@ -52,13 +53,19 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--ditto-source-mode', help = locale_get('help.source_mode'), default = config.get_str_value('processors', 'ditto_source_mode', 'video_native'), choices = ditto_choices.ditto_source_modes)
 		group_processors.add_argument('--ditto-backend', help = locale_get('help.backend'), default = config.get_str_value('processors', 'ditto_backend', 'onnx'), choices = ditto_choices.ditto_backends)
 		group_processors.add_argument('--ditto-render-mode', help = locale_get('help.render_mode'), default = config.get_str_value('processors', 'ditto_render_mode', 'native_putback'), choices = ditto_choices.ditto_render_modes)
-		facefusion.jobs.job_store.register_step_keys([ 'ditto_source_mode', 'ditto_backend', 'ditto_render_mode' ])
+		group_processors.add_argument('--ditto-registration-crop-mode', help = locale_get('help.registration_crop_mode'), default = config.get_str_value('processors', 'ditto_registration_crop_mode', 'ditto_native'), choices = ditto_choices.ditto_crop_prep_modes)
+		group_processors.add_argument('--ditto-live-crop-mode', help = locale_get('help.live_crop_mode'), default = config.get_str_value('processors', 'ditto_live_crop_mode', 'ditto_native'), choices = ditto_choices.ditto_crop_prep_modes)
+		group_processors.add_argument('--ditto-composite-geometry-mode', help = locale_get('help.composite_geometry_mode'), default = config.get_str_value('processors', 'ditto_composite_geometry_mode', 'ditto_transform'), choices = ditto_choices.ditto_composite_geometry_modes)
+		facefusion.jobs.job_store.register_step_keys([ 'ditto_source_mode', 'ditto_backend', 'ditto_render_mode', 'ditto_registration_crop_mode', 'ditto_live_crop_mode', 'ditto_composite_geometry_mode' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	apply_state_item('ditto_source_mode', args.get('ditto_source_mode'))
 	apply_state_item('ditto_backend', args.get('ditto_backend'))
 	apply_state_item('ditto_render_mode', args.get('ditto_render_mode'))
+	apply_state_item('ditto_registration_crop_mode', args.get('ditto_registration_crop_mode'))
+	apply_state_item('ditto_live_crop_mode', args.get('ditto_live_crop_mode'))
+	apply_state_item('ditto_composite_geometry_mode', args.get('ditto_composite_geometry_mode'))
 
 
 def pre_check() -> bool:
@@ -101,8 +108,8 @@ def _build_cache_key() -> str:
 					 str(state_manager.get_item('ditto_backend'))])
 
 
-def _load_target_frames(target_path : str, max_frames : int = 500) -> Dict[str, Any]:
-	"""Load RGB frames sampled across the full target timeline for avatar registration."""
+def _load_target_frames(target_path : str, max_frames : Optional[int] = None) -> Dict[str, Any]:
+	"""Load RGB frames across the full target timeline for avatar registration."""
 	if is_image(target_path):
 		img = cv2.imread(target_path)
 		if img is None:
@@ -117,7 +124,7 @@ def _load_target_frames(target_path : str, max_frames : int = 500) -> Dict[str, 
 	total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 	frames = []
 	frame_numbers = []
-	if total_frames > 0 and total_frames > max_frames:
+	if max_frames is not None and total_frames > 0 and total_frames > max_frames:
 		sampled_numbers = numpy.unique(
 			numpy.linspace(0, total_frames - 1, num=max_frames, dtype=numpy.int32)
 		).tolist()
@@ -228,11 +235,46 @@ def _prepare_pipeline_locked(cache_key : str) -> bool:
 		_PIPELINE_FAILED = True
 		return False
 
+	if is_image(target_path):
+		reference_vision_frame = read_static_image(target_path)
+	else:
+		reference_vision_frame = read_static_video_frame(target_path, state_manager.get_item('reference_frame_number'))
+
+	use_facefusion_registration_crop = get_ditto_registration_crop_mode() == 'facefusion_crop'
+	crop_frames = []
+	affine_matrices = []
+	bbox_hints = []
+	landmark_hints = []
+	for frame_number, rgb_frame in zip(target_frames.get('frame_numbers', []), img_rgb_list):
+		target_vision_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+		target_faces = select_faces(reference_vision_frame, target_vision_frame) if reference_vision_frame is not None else []
+		if not target_faces:
+			if use_facefusion_registration_crop:
+				crop_frames.append(None)
+				affine_matrices.append(None)
+			bbox_hints.append(None)
+			landmark_hints.append(None)
+			continue
+		target_face = target_faces[0]
+		if use_facefusion_registration_crop:
+			crop_rgb, affine_matrix = _create_facefusion_crop(target_vision_frame, target_face, frame_number, stabilize = False)
+			crop_frames.append(crop_rgb)
+			affine_matrices.append(affine_matrix)
+		bbox_hints.append(target_face.bounding_box.astype(numpy.float32))
+		current_landmarks = target_face.landmark_set.get('68')
+		if current_landmarks is None:
+			current_landmarks = target_face.landmark_set.get('5/68')
+		landmark_hints.append(current_landmarks.astype(numpy.float32) if current_landmarks is not None else None)
+
 	DITTO_RUNNER.prepare(
 		img_rgb_list,
 		audio_16k,
 		source_frame_numbers=target_frames.get('frame_numbers'),
 		source_total_frames=target_frames.get('total_frames'),
+		crop_frames=crop_frames if use_facefusion_registration_crop else None,
+		affine_matrices=affine_matrices if use_facefusion_registration_crop else None,
+		bbox_hints=bbox_hints,
+		landmark_hints=landmark_hints,
 		sampling_timesteps=50
 	)
 	_PIPELINE_CACHE_KEY = cache_key
@@ -285,10 +327,6 @@ def _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_numbe
 	return None
 
 
-def _is_safe_ditto_face(target_face, temp_vision_frame, frame_number : int) -> bool:
-	return _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number) is None
-
-
 def _draw_face_box(debug_frame, target_face, color, label : str) -> None:
 	x1, y1, x2, y2 = [ int(v) for v in target_face.bounding_box[:4] ]
 	cv2.rectangle(debug_frame, (x1, y1), (x2, y2), color, 2)
@@ -303,23 +341,36 @@ def _draw_landmarks(debug_frame, landmarks, color) -> None:
 
 
 def _draw_expected_hint(debug_frame, frame_number : int) -> None:
+	return _get_expected_hint_debug_info(frame_number, debug_frame)
+
+
+def _get_expected_hint_debug_info(frame_number : int, debug_frame = None) -> Optional[Dict[str, float]]:
 	if DITTO_RUNNER is None or not DITTO_RUNNER.is_prepared:
-		return
+		return None
 	expected_hint = DITTO_RUNNER.get_expected_face_hint(frame_number)
 	if not expected_hint:
-		return
+		return None
 	center = numpy.asarray(expected_hint.get('center'), dtype = numpy.float32)
 	size = float(expected_hint.get('size') or 0.0)
 	if center.size < 2 or size <= 0:
-		return
+		return None
 	cx, cy = int(center[0]), int(center[1])
 	half = int(size / 2)
-	cv2.rectangle(debug_frame, (cx - half, cy - half), (cx + half, cy + half), (255, 0, 255), 2)
-	cv2.circle(debug_frame, (cx, cy), 4, (255, 0, 255), -1)
-	cv2.putText(debug_frame, 'expected', (cx - half, max(20, cy - half - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2, cv2.LINE_AA)
+	if debug_frame is not None:
+		cv2.rectangle(debug_frame, (cx - half, cy - half), (cx + half, cy + half), (255, 0, 255), 2)
+		cv2.circle(debug_frame, (cx, cy), 4, (255, 0, 255), -1)
+		cv2.putText(debug_frame, 'expected', (cx - half, max(20, cy - half - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 2, cv2.LINE_AA)
+	return {
+		'cx': float(center[0]),
+		'cy': float(center[1]),
+		'size': size,
+		'source_index': float(expected_hint.get('source_index') or 0),
+		'source_frame_number': float(expected_hint.get('source_frame_number') or 0),
+		'source_total_frames': float(expected_hint.get('source_total_frames') or 0)
+	}
 
 
-def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = None, selected_faces = None, selected_face = None, rejection_reason : Optional[str] = None):
+def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = None, selected_faces = None, selected_face = None, warning_reason : Optional[str] = None, accepted : bool = True):
 	debug_frame = target_vision_frame[:, :, :3].copy()
 	raw_faces = raw_faces or []
 	selected_faces = selected_faces or []
@@ -329,7 +380,16 @@ def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = Non
 		f'selected_faces={len(selected_faces)}'
 	]
 
-	_draw_expected_hint(debug_frame, frame_number)
+	expected_hint_info = _get_expected_hint_debug_info(frame_number, debug_frame)
+	if expected_hint_info:
+		status_lines.append(
+			f'expected_sample={int(expected_hint_info["source_frame_number"])}/{max(int(expected_hint_info["source_total_frames"]) - 1, 0)} idx={int(expected_hint_info["source_index"])}'
+		)
+		status_lines.append(
+			f'expected_center=({int(expected_hint_info["cx"])},{int(expected_hint_info["cy"])}) size={expected_hint_info["size"]:.1f}'
+		)
+	else:
+		status_lines.append('expected_sample=None')
 
 	for index, face in enumerate(raw_faces):
 		_draw_face_box(debug_frame, face, (0, 255, 255), f'raw[{index}] d={float(face.score_set.get("detector") or 0.0):.2f}')
@@ -340,9 +400,12 @@ def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = Non
 	if selected_face is not None:
 		label = 'accepted'
 		color = (0, 200, 0)
-		if rejection_reason:
-			label = f'rejected: {rejection_reason}'
+		if not accepted:
+			label = f'rejected: {warning_reason or "unknown"}'
 			color = (0, 0, 255)
+		elif warning_reason:
+			label = f'accepted: {warning_reason}'
+			color = (0, 165, 255)
 		_draw_face_box(debug_frame, selected_face, color, label)
 		_draw_landmarks(debug_frame, selected_face.landmark_set.get('68'), color)
 		detector_score = float(selected_face.score_set.get('detector') or 0.0)
@@ -351,10 +414,10 @@ def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = Non
 	else:
 		status_lines.append('selected_face=None')
 
-	if rejection_reason:
-		status_lines.append(rejection_reason)
+	if warning_reason:
+		status_lines.append(f'hint_warning={warning_reason}')
 	elif selected_face is not None:
-		status_lines.append('safety_gate=pass')
+		status_lines.append('selection_source=facefusion')
 	else:
 		status_lines.append('selection=none')
 
@@ -362,6 +425,96 @@ def _create_debug_frame(target_vision_frame, frame_number : int, raw_faces = Non
 		cv2.putText(debug_frame, line, (12, 28 + index * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 3, cv2.LINE_AA)
 		cv2.putText(debug_frame, line, (12, 28 + index * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
 	return debug_frame
+
+
+def _paste_ditto_with_facefusion(temp_vision_frame, target_face, render_rgb, affine_matrix, debug_mask : bool = False):
+	from facefusion.face_helper import paste_back
+	from facefusion.processors.modules.lip_syncer.core import create_live_portrait_mask, create_occlusion_masks, visualize_mask
+
+	render_bgr = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
+	crop_masks = create_occlusion_masks(render_bgr)
+	crop_masks.append(create_live_portrait_mask(render_bgr, target_face, affine_matrix))
+	crop_mask = numpy.minimum.reduce(crop_masks)
+
+	if debug_mask:
+		return visualize_mask(temp_vision_frame, crop_mask, affine_matrix)
+	return paste_back(temp_vision_frame, render_bgr, crop_mask, affine_matrix)
+
+
+def _create_facefusion_crop(temp_vision_frame, target_face, frame_number : int, stabilize : bool = True):
+	from facefusion.processors.modules.lip_syncer.core import stabilize_crop_face_landmark_5
+
+	face_landmark_5 = target_face.landmark_set.get('5/68').astype(numpy.float32)
+	if stabilize:
+		stabilized_landmarks = stabilize_crop_face_landmark_5(target_face, temp_vision_frame, temp_vision_frame, frame_number)
+		if stabilized_landmarks is not None and getattr(stabilized_landmarks, 'shape', (0, 0))[0] == 5:
+			face_landmark_5 = stabilized_landmarks.astype(numpy.float32)
+	affine_matrix = estimate_matrix_by_face_landmark_5(face_landmark_5, 'ffhq_512', (512, 512))
+	crop_bgr = cv2.warpAffine(temp_vision_frame, affine_matrix, (512, 512), borderMode = cv2.BORDER_REPLICATE, flags = cv2.INTER_AREA)
+	crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+	return crop_rgb, affine_matrix.astype(numpy.float32)
+
+
+def get_ditto_registration_crop_mode() -> str:
+	mode = state_manager.get_item('ditto_registration_crop_mode')
+	if mode in ditto_choices.ditto_crop_prep_modes:
+		return mode
+	return 'ditto_native'
+
+
+def get_ditto_live_crop_mode() -> str:
+	mode = state_manager.get_item('ditto_live_crop_mode')
+	if mode in ditto_choices.ditto_crop_prep_modes:
+		return mode
+	return 'ditto_native'
+
+
+def get_ditto_composite_geometry_mode() -> str:
+	mode = state_manager.get_item('ditto_composite_geometry_mode')
+	if mode in ditto_choices.ditto_composite_geometry_modes:
+		return mode
+	return 'ditto_transform'
+
+
+def _matrix_2x3_to_3x3(matrix) -> numpy.ndarray:
+	return numpy.vstack([ matrix.astype(numpy.float32), numpy.array([ 0, 0, 1 ], dtype = numpy.float32) ])
+
+
+def _warp_render_to_facefusion_space(render_rgb, ditto_affine_matrix, facefusion_affine_matrix):
+	ditto_matrix = _matrix_2x3_to_3x3(ditto_affine_matrix)
+	facefusion_matrix = _matrix_2x3_to_3x3(facefusion_affine_matrix)
+	ditto_to_facefusion = facefusion_matrix @ numpy.linalg.inv(ditto_matrix)
+	return cv2.warpAffine(render_rgb, ditto_to_facefusion[:2, :], (512, 512), flags = cv2.INTER_LINEAR, borderMode = cv2.BORDER_REPLICATE)
+
+
+def _stabilize_ditto_landmarks(target_face, target_vision_frame, temp_vision_frame, frame_number : int):
+	from facefusion.processors.modules.lip_syncer.core import get_adjacent_target_face
+
+	current_landmarks = target_face.landmark_set.get('68')
+	if current_landmarks is None:
+		return target_face.landmark_set.get('5/68')
+
+	crop_stabilization = state_manager.get_item('lip_syncer_crop_stabilization') or 0.0
+	if crop_stabilization <= 0:
+		return current_landmarks
+
+	neighbor_landmarks = []
+	for frame_offset in [ -1, 1 ]:
+		neighbor_face = get_adjacent_target_face(target_face, target_vision_frame, temp_vision_frame, frame_number, frame_offset)
+		if neighbor_face is not None:
+			neighbor_landmark_68 = neighbor_face.landmark_set.get('68')
+			if neighbor_landmark_68 is not None and neighbor_landmark_68.shape == current_landmarks.shape:
+				neighbor_landmarks.append(neighbor_landmark_68.astype(numpy.float32))
+
+	if not neighbor_landmarks:
+		return current_landmarks
+
+	temporal_landmarks = current_landmarks.astype(numpy.float32) * 0.5
+	neighbor_weight = 0.5 / len(neighbor_landmarks)
+	for neighbor_landmark_68 in neighbor_landmarks:
+		temporal_landmarks += neighbor_landmark_68 * neighbor_weight
+
+	return current_landmarks.astype(numpy.float32) * (1 - crop_stabilization) + temporal_landmarks * crop_stabilization
 
 
 def process_frame(inputs : DittoInputs) -> ProcessorOutputs:
@@ -386,7 +539,7 @@ def process_frame(inputs : DittoInputs) -> ProcessorOutputs:
 
 	selected_face = target_faces[0]
 	target_face = scale_face(selected_face, target_vision_frame, temp_vision_frame)
-	rejection_reason = _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number)
+	warning_reason = _get_ditto_face_rejection_reason(target_face, temp_vision_frame, frame_number)
 	if debug_mask:
 		return _create_debug_frame(
 			target_vision_frame,
@@ -394,32 +547,61 @@ def process_frame(inputs : DittoInputs) -> ProcessorOutputs:
 			raw_faces = raw_faces,
 			selected_faces = target_faces,
 			selected_face = selected_face,
-			rejection_reason = rejection_reason
+			warning_reason = warning_reason,
+			accepted = True
 		), temp_vision_mask
-	if rejection_reason:
-		return temp_vision_frame, temp_vision_mask
 	current_frame_rgb = cv2.cvtColor(target_vision_frame[:, :, :3], cv2.COLOR_BGR2RGB)
 	current_bbox = target_face.bounding_box.astype(numpy.float32)
-	current_landmarks = target_face.landmark_set.get('68')
-	if current_landmarks is None:
-		current_landmarks = target_face.landmark_set.get('5/68')
+	current_landmarks = _stabilize_ditto_landmarks(target_face, target_vision_frame, temp_vision_frame[:, :, :3], frame_number)
 	if current_landmarks is not None:
 		current_landmarks = current_landmarks.astype(numpy.float32)
+	affine_matrix = None
+	current_crop_rgb = None
+	facefusion_crop_rgb = None
+	facefusion_affine_matrix = None
+	if get_ditto_live_crop_mode() == 'facefusion_crop':
+		current_crop_rgb, affine_matrix = _create_facefusion_crop(temp_vision_frame[:, :, :3], target_face, frame_number, stabilize = True)
+		facefusion_crop_rgb = current_crop_rgb
+		facefusion_affine_matrix = affine_matrix
+	elif get_ditto_composite_geometry_mode() in ( 'facefusion_affine', 'warp_to_facefusion' ):
+		facefusion_crop_rgb, facefusion_affine_matrix = _create_facefusion_crop(temp_vision_frame[:, :, :3], target_face, frame_number, stabilize = True)
 
 	# Ditto's render path uses heavyweight GPU ops and live face analysis.
 	# FaceFusion processes video frames in parallel, so guard Ditto to avoid
 	# overlapping allocations and out-of-order state issues.
 	with _PROCESS_LOCK:
-		result_rgb = DITTO_RUNNER.process_frame(
+		render_data = DITTO_RUNNER.process_frame_data(
 			frame_number,
 			current_frame_rgb=current_frame_rgb,
+			current_crop_rgb=current_crop_rgb,
+			current_affine_matrix=affine_matrix,
 			current_bbox=current_bbox,
 			current_landmarks=current_landmarks
 		)
-	if result_rgb is None:
+	if render_data is None:
 		return temp_vision_frame, temp_vision_mask
-
-	result_bgr = cv2.cvtColor(result_rgb, cv2.COLOR_RGB2BGR)
+	composite_geometry_mode = get_ditto_composite_geometry_mode()
+	render_rgb = render_data.get('render_img')
+	if composite_geometry_mode == 'ditto_transform':
+		if affine_matrix is None:
+			affine_matrix = render_data.get('M_o2c')[:2, :]
+	elif composite_geometry_mode == 'facefusion_affine':
+		affine_matrix = facefusion_affine_matrix if facefusion_affine_matrix is not None else render_data.get('M_o2c')[:2, :]
+	elif composite_geometry_mode == 'warp_to_facefusion':
+		if facefusion_affine_matrix is not None:
+			render_rgb = _warp_render_to_facefusion_space(render_rgb, render_data.get('M_o2c')[:2, :], facefusion_affine_matrix)
+			affine_matrix = facefusion_affine_matrix
+		else:
+			affine_matrix = render_data.get('M_o2c')[:2, :]
+	else:
+		affine_matrix = render_data.get('M_o2c')[:2, :]
+	result_bgr = _paste_ditto_with_facefusion(
+		temp_vision_frame[:, :, :3],
+		target_face,
+		render_rgb,
+		affine_matrix,
+		debug_mask
+	)
 
 	# Match output size to temp_vision_frame if they differ
 	if result_bgr.shape[:2] != temp_vision_frame.shape[:2]:

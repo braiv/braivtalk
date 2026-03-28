@@ -15,6 +15,7 @@ LipSyncerInputs = TypedDict('LipSyncerInputs',
 	'debug_mask' : bool
 }, total = False)
 
+LipSyncerPipeline = Literal['live_portrait', 'ditto']
 LipSyncerModel = Literal['edtalk_256', 'wav2lip_96', 'wav2lip_gan_96']
 LipSyncerMotionMaskMode = Literal['off', 'box', 'hybrid']
 

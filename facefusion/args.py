@@ -60,7 +60,12 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 		apply_state_item('output_video_fps', output_video_fps)
 
 	available_processors = get_available_processors()
-	apply_state_item('processors', args.get('processors'))
+	processors = list(args.get('processors') or [])
+	if 'ditto' in processors:
+		processors = [ processor for processor in processors if processor != 'ditto' ]
+		if 'lip_syncer' not in processors:
+			processors.append('lip_syncer')
+	apply_state_item('processors', processors)
 
 	for processor_module in get_processors_modules(available_processors):
 		processor_module.apply_args(args, apply_state_item)

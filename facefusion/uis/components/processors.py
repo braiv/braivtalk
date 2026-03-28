@@ -15,7 +15,7 @@ def render() -> None:
 	PROCESSORS_CHECKBOX_GROUP = gradio.CheckboxGroup(
 		label = translator.get('uis.processors_checkbox_group'),
 		choices = sort_processors(state_manager.get_item('processors')),
-		value = state_manager.get_item('processors')
+		value = normalize_processors(state_manager.get_item('processors'))
 	)
 	register_ui_component('processors_checkbox_group', PROCESSORS_CHECKBOX_GROUP)
 
@@ -25,6 +25,7 @@ def listen() -> None:
 
 
 def update_processors(processors : List[str]) -> gradio.CheckboxGroup:
+	processors = normalize_processors(processors)
 	for processor_module in get_processors_modules(state_manager.get_item('processors')):
 		if hasattr(processor_module, 'clear_inference_pool'):
 			processor_module.clear_inference_pool()
@@ -38,11 +39,18 @@ def update_processors(processors : List[str]) -> gradio.CheckboxGroup:
 
 
 def sort_processors(processors : List[str]) -> List[str]:
-	available_processors = get_available_processors()
+	available_processors = [ processor for processor in get_available_processors() if processor != 'ditto' ]
 	current_processors = []
 
-	for processor in processors + available_processors:
+	for processor in normalize_processors(processors) + available_processors:
 		if processor in available_processors and processor not in current_processors:
 			current_processors.append(processor)
 
+	return current_processors
+
+
+def normalize_processors(processors : List[str]) -> List[str]:
+	current_processors = [ processor for processor in processors if processor != 'ditto' ]
+	if 'ditto' in processors and 'lip_syncer' not in current_processors:
+		current_processors.append('lip_syncer')
 	return current_processors

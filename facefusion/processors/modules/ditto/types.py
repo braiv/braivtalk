@@ -20,3 +20,5 @@ DittoInputs = TypedDict('DittoInputs',
 DittoSourceMode = Literal['video_native', 'image_anchor']
 DittoBackend = Literal['onnx', 'trt', 'pytorch']
 DittoRenderMode = Literal['native_putback', 'facefusion_composite']
+DittoCropPrepMode = Literal['ditto_native', 'facefusion_crop']
+DittoCompositeGeometryMode = Literal['ditto_transform', 'facefusion_affine', 'warp_to_facefusion']

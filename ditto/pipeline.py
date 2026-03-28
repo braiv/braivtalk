@@ -335,6 +335,17 @@ def _landmark_center_size(pts: NDArray) -> Tuple[NDArray, float]:
     return center.astype(np.float32), float(size[0])
 
 
+def _bbox_center_size(bbox: NDArray) -> Tuple[NDArray, float]:
+    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+    center = np.array([(x1 + x2) / 2, (y1 + y2) / 2], dtype=np.float32)
+    size = float(max(x2 - x1, y2 - y1))
+    return center, size
+
+
+def _matrix_2x3_to_3x3(matrix: NDArray) -> NDArray:
+    return np.vstack([matrix.astype(np.float32), np.array([0, 0, 1], dtype=np.float32)])
+
+
 # ---------------------------------------------------------------------------
 # Face detection – InsightFace RetinaFace (ONNX)
 # ---------------------------------------------------------------------------
@@ -990,15 +1001,25 @@ def _mix_s_d_info(x_s_info, x_d_info, use_d_keys, d0=None):
     return x_d_info
 
 
-def _fix_exp_for_video(x_d_info, x_s_info):
-    """For video source: only use driven lips, keep source eyes and other expression."""
+def _fix_exp_for_video(x_d_info, x_s_info, expressiveness=1.0):
+    """For video source: keep source non-lip expression and scale driven lips."""
     _lip = [6, 12, 14, 17, 19, 20]
     a1 = np.zeros((21, 3), dtype=np.float32)
     a1[_lip] = 1
     a1 = a1.reshape(1, -1)
     a2 = 1 - a1
+    if expressiveness != 1.0:
+        x_d_info['exp'] = x_s_info['exp'] + (x_d_info['exp'] - x_s_info['exp']) * float(expressiveness)
     x_d_info['exp'] = x_d_info['exp'] * a1 + x_s_info['exp'] * a2
     return x_d_info
+
+
+def _get_lip_syncer_expressiveness() -> float:
+    try:
+        from facefusion import state_manager
+        return float(state_manager.get_item('lip_syncer_expressiveness') or 1.0)
+    except Exception:
+        return 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -1109,7 +1130,12 @@ class Source2Info:
         rgb_256 = self._img_to_bchw256(img_crop)
         kp_info = self.mot_ext(rgb_256)
         f_s = self.app_ext(rgb_256) if extract_feature else None
-        face_center, face_size = _landmark_center_size(lmk203)
+        if landmark_hint is not None:
+            face_center, face_size = _landmark_center_size(landmark_hint.astype(np.float32))
+        elif bbox_hint is not None:
+            face_center, face_size = _bbox_center_size(bbox_hint.astype(np.float32))
+        else:
+            face_center, face_size = _landmark_center_size(lmk203)
 
         # Default eye values (skipping blaze_face + face_mesh for simplicity)
         eye_open = np.array([[0.8, 0.8]], dtype=np.float32)
@@ -1119,6 +1145,29 @@ class Source2Info:
             'x_s_info': kp_info, 'f_s': f_s, 'M_o2c': M_o2c, 'M_c2o': M_c2o,
             'eye_open': eye_open, 'eye_ball': eye_ball, 'lmk203': lmk203,
             'face_center': face_center, 'face_size': face_size, 'det_score': det_score,
+        }
+
+    def from_crop(self, img_crop_rgb, affine_matrix, extract_feature=True,
+                  bbox_hint=None, landmark_hint=None):
+        rgb_256 = self._img_to_bchw256(img_crop_rgb)
+        kp_info = self.mot_ext(rgb_256)
+        f_s = self.app_ext(rgb_256) if extract_feature else None
+        if landmark_hint is not None:
+            face_center, face_size = _landmark_center_size(landmark_hint.astype(np.float32))
+        elif bbox_hint is not None:
+            face_center, face_size = _bbox_center_size(bbox_hint.astype(np.float32))
+        else:
+            h, w = img_crop_rgb.shape[:2]
+            face_center = np.array([w / 2, h / 2], dtype=np.float32)
+            face_size = float(max(w, h))
+        M_o2c = _matrix_2x3_to_3x3(affine_matrix)
+        M_c2o = np.linalg.inv(M_o2c)
+        eye_open = np.array([[0.8, 0.8]], dtype=np.float32)
+        eye_ball = np.zeros((1, 6), dtype=np.float32)
+        return {
+            'x_s_info': kp_info, 'f_s': f_s, 'M_o2c': M_o2c,
+            'M_c2o': M_c2o.astype(np.float32), 'eye_open': eye_open, 'eye_ball': eye_ball,
+            'lmk203': None, 'face_center': face_center, 'face_size': face_size, 'det_score': None,
         }
 
 
@@ -1146,6 +1195,10 @@ def _smooth_x_s_info_lst(info_list, smo_k=13):
 def register_avatar(source2info: Source2Info, img_rgb_list: List[NDArray],
                     source_frame_numbers: Optional[List[int]] = None,
                     source_total_frames: Optional[int] = None,
+                    crop_frames: Optional[List[Optional[NDArray]]] = None,
+                    affine_matrices: Optional[List[Optional[NDArray]]] = None,
+                    bbox_hints: Optional[List[Optional[NDArray]]] = None,
+                    landmark_hints: Optional[List[Optional[NDArray]]] = None,
                     smo_k: int = 13, **crop_kw) -> Dict:
     """Register source avatar from a list of RGB frames."""
     source_info = {
@@ -1154,18 +1207,31 @@ def register_avatar(source2info: Source2Info, img_rgb_list: List[NDArray],
         'img_rgb_lst': [], 'source_frame_numbers': [],
         'face_center_lst': [], 'face_size_lst': [],
     }
-    last_lmk = None
     if source_frame_numbers is None:
         source_frame_numbers = list(range(len(img_rgb_list)))
-    for frame_number, rgb in zip(source_frame_numbers, img_rgb_list):
-        info = source2info(rgb, last_lmk, **crop_kw)
+    for index, (frame_number, rgb) in enumerate(zip(source_frame_numbers, img_rgb_list)):
+        crop_frame = crop_frames[index] if crop_frames is not None and index < len(crop_frames) else None
+        affine_matrix = affine_matrices[index] if affine_matrices is not None and index < len(affine_matrices) else None
+        bbox_hint = bbox_hints[index] if bbox_hints is not None and index < len(bbox_hints) else None
+        landmark_hint = landmark_hints[index] if landmark_hints is not None and index < len(landmark_hints) else None
+        if crop_frame is not None and affine_matrix is not None:
+            info = source2info.from_crop(
+                crop_frame,
+                affine_matrix,
+                bbox_hint=bbox_hint,
+                landmark_hint=landmark_hint
+            )
+        else:
+            if bbox_hints is not None or landmark_hints is not None:
+                if bbox_hint is None and landmark_hint is None:
+                    continue
+            info = source2info(rgb, None, bbox_hint=bbox_hint, landmark_hint=landmark_hint, **crop_kw)
         if info is None:
             continue
         source_info['img_rgb_lst'].append(rgb)
         source_info['source_frame_numbers'].append(int(frame_number))
         for k in ['x_s_info', 'f_s', 'M_o2c', 'M_c2o', 'eye_open', 'eye_ball', 'face_center', 'face_size']:
             source_info[f'{k}_lst'].append(info[k])
-        last_lmk = info['lmk203']
     if len(img_rgb_list) != len(source_frame_numbers):
         raise RuntimeError('Source frame metadata length mismatch')
 
@@ -1228,6 +1294,10 @@ class DittoPipeline:
     def prepare(self, img_rgb_list: List[NDArray], audio_16k: NDArray,
                 source_frame_numbers: Optional[List[int]] = None,
                 source_total_frames: Optional[int] = None,
+                crop_frames: Optional[List[Optional[NDArray]]] = None,
+                affine_matrices: Optional[List[Optional[NDArray]]] = None,
+                bbox_hints: Optional[List[Optional[NDArray]]] = None,
+                landmark_hints: Optional[List[Optional[NDArray]]] = None,
                 sampling_timesteps: int = 50, emo: int = 4):
         """Pre-compute all motion parameters from source frames + audio.
 
@@ -1246,6 +1316,10 @@ class DittoPipeline:
             img_rgb_list,
             source_frame_numbers=source_frame_numbers,
             source_total_frames=source_total_frames,
+            crop_frames=crop_frames,
+            affine_matrices=affine_matrices,
+            bbox_hints=bbox_hints,
+            landmark_hints=landmark_hints,
         )
         self.num_source_frames = len(self.source_info['x_s_info_lst'])
         is_image = self.source_info['is_image_flag']
@@ -1325,22 +1399,22 @@ class DittoPipeline:
         if self.source_info is None or self.num_source_frames <= 0:
             return None
         src_idx = self._get_source_frame_index(frame_number)
+        source_frame_numbers = self.source_info.get('source_frame_numbers') or list(range(self.num_source_frames))
+        source_total_frames = int(self.source_info.get('source_total_frames', self.num_source_frames))
         return {
             'center': np.asarray(self.source_info['face_center_lst'][src_idx], dtype=np.float32),
-            'size': np.asarray(self.source_info['face_size_lst'][src_idx], dtype=np.float32)
+            'size': np.asarray(self.source_info['face_size_lst'][src_idx], dtype=np.float32),
+            'source_index': np.asarray(src_idx, dtype=np.int32),
+            'source_frame_number': np.asarray(int(source_frame_numbers[src_idx]), dtype=np.int32),
+            'source_total_frames': np.asarray(source_total_frames, dtype=np.int32)
         }
 
-    def render_frame(self, frame_number: int, current_frame_rgb: Optional[NDArray] = None,
-                     current_bbox: Optional[NDArray] = None,
-                     current_landmarks: Optional[NDArray] = None) -> Optional[NDArray]:
-        """Render a single output frame using pre-computed motion.
-
-        Args:
-            frame_number: Output frame index (0-based).
-
-        Returns:
-            Composited RGB frame, or None if frame_number is out of range.
-        """
+    def render_frame_data(self, frame_number: int, current_frame_rgb: Optional[NDArray] = None,
+                          current_crop_rgb: Optional[NDArray] = None,
+                          current_affine_matrix: Optional[NDArray] = None,
+                          current_bbox: Optional[NDArray] = None,
+                          current_landmarks: Optional[NDArray] = None) -> Optional[Dict[str, NDArray]]:
+        """Render a single output frame and return crop-space data."""
         if self.x_d_info_list is None or self.source_info is None:
             return None
         if frame_number >= len(self.x_d_info_list):
@@ -1353,7 +1427,20 @@ class DittoPipeline:
         frame_rgb = self.source_info['img_rgb_lst'][src_idx]
         M_o2c = self.source_info['M_o2c_lst'][src_idx]
         M_c2o = self.source_info['M_c2o_lst'][src_idx]
-        if current_frame_rgb is not None and not self.source_info.get('is_image_flag'):
+        if current_crop_rgb is not None and current_affine_matrix is not None and not self.source_info.get('is_image_flag'):
+            live_info = self.source2info.from_crop(
+                current_crop_rgb,
+                current_affine_matrix,
+                extract_feature=False,
+                bbox_hint=current_bbox,
+                landmark_hint=current_landmarks
+            )
+            x_s_info = live_info['x_s_info']
+            if current_frame_rgb is not None:
+                frame_rgb = current_frame_rgb
+            M_o2c = live_info['M_o2c']
+            M_c2o = live_info['M_c2o']
+        elif current_frame_rgb is not None and not self.source_info.get('is_image_flag'):
             if current_bbox is None and current_landmarks is None:
                 return None
             # FaceFusion renders frames in parallel, so render-time tracking must be
@@ -1381,7 +1468,7 @@ class DittoPipeline:
 
         # For video: only drive lips, keep source eyes
         if not self._drive_eye:
-            x_d_info = _fix_exp_for_video(x_d_info, x_s_info)
+            x_d_info = _fix_exp_for_video(x_d_info, x_s_info, _get_lip_syncer_expressiveness())
 
         # Transform keypoints
         if self._x_s_static is not None:
@@ -1407,6 +1494,29 @@ class DittoPipeline:
 
         # Decode
         render_img = self.decoder(f_3d.astype(np.float32))
+        return {
+            'render_img': render_img.astype(np.uint8),
+            'frame_rgb': frame_rgb.astype(np.uint8),
+            'M_o2c': M_o2c.astype(np.float32),
+            'M_c2o': M_c2o.astype(np.float32)
+        }
+
+    def render_frame(self, frame_number: int, current_frame_rgb: Optional[NDArray] = None,
+                     current_bbox: Optional[NDArray] = None,
+                     current_landmarks: Optional[NDArray] = None) -> Optional[NDArray]:
+        """Render a single output frame using pre-computed motion."""
+        render_data = self.render_frame_data(
+            frame_number,
+            current_frame_rgb=current_frame_rgb,
+            current_bbox=current_bbox,
+            current_landmarks=current_landmarks
+        )
+        if render_data is None:
+            return None
+        render_img = render_data['render_img']
+        frame_rgb = render_data['frame_rgb']
+        M_c2o = render_data['M_c2o']
+        M_o2c = render_data['M_o2c']
 
         # Composite onto original frame. For video mode, prefer FaceFusion-style
         # masked pasteback to constrain failures much more tightly than Ditto's
@@ -1423,6 +1533,9 @@ class DittoPipeline:
             )
             if 'occlusion' in state_manager.get_item('face_mask_types'):
                 crop_mask = np.minimum(crop_mask, create_occlusion_mask(render_img.astype(np.uint8)))
+            # Keep a fully opaque core so the rendered face does not look like a
+            # translucent layer sitting on top of the original frame.
+            crop_mask = np.power(np.clip(crop_mask, 0, 1), 0.6).astype(np.float32)
             return paste_back(frame_rgb, render_img.astype(np.uint8), crop_mask, M_o2c[:2, :])
 
         result = self.putback(frame_rgb, render_img, M_c2o)

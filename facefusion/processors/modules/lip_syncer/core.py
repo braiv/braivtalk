@@ -19,7 +19,7 @@ from facefusion.face_selector import select_faces
 from facefusion.filesystem import filter_audio_paths, has_audio, is_video, resolve_relative_path
 from facefusion.processors.live_portrait import create_rotation, limit_expression
 from facefusion.processors.modules.lip_syncer import choices as lip_syncer_choices
-from facefusion.processors.modules.lip_syncer.types import LipSyncerInputs, LipSyncerMotionMaskMode, LipSyncerWeight
+from facefusion.processors.modules.lip_syncer.types import LipSyncerInputs, LipSyncerMotionMaskMode, LipSyncerPipeline, LipSyncerWeight
 from facefusion.processors.types import LivePortraitExpression, LivePortraitFeatureVolume, LivePortraitMotionPoints, LivePortraitPitch, LivePortraitRoll, LivePortraitScale, LivePortraitTranslation, LivePortraitYaw, ProcessorOutputs
 from facefusion.program_helper import find_argument_group
 from facefusion.thread_helper import conditional_thread_semaphore, thread_semaphore
@@ -196,15 +196,15 @@ def create_static_model_set(download_scope : DownloadScope) -> ModelSet:
 
 
 def collect_model_downloads() -> Tuple[DownloadSet, DownloadSet]:
+	if is_ditto_pipeline():
+		return {}, {}
 	model_set = create_static_model_set('full')
 	model_hash_set = {}
 	model_source_set = {}
 
-	current_model = state_manager.get_item('lip_syncer_model')
-	for lip_syncer_model in [ 'wav2lip_96', 'wav2lip_gan_96', 'edtalk_256' ]:
-		if current_model == lip_syncer_model:
-			model_hash_set['lip_syncer'] = model_set.get(lip_syncer_model).get('hashes').get('lip_syncer')
-			model_source_set['lip_syncer'] = model_set.get(lip_syncer_model).get('sources').get('lip_syncer')
+	current_model = get_effective_lip_syncer_model()
+	model_hash_set['lip_syncer'] = model_set.get(current_model).get('hashes').get('lip_syncer')
+	model_source_set['lip_syncer'] = model_set.get(current_model).get('sources').get('lip_syncer')
 
 	if has_pure_motion():
 		model_hashes = model_set.get('live_portrait').get('hashes')
@@ -220,7 +220,9 @@ def collect_model_downloads() -> Tuple[DownloadSet, DownloadSet]:
 
 
 def get_inference_pool_model_names() -> List[str]:
-	model_names = [ state_manager.get_item('lip_syncer_model') ]
+	if is_ditto_pipeline():
+		return []
+	model_names = [ get_effective_lip_syncer_model() ]
 	if has_pure_motion():
 		model_names.append('live_portrait')
 	return model_names
@@ -228,13 +230,16 @@ def get_inference_pool_model_names() -> List[str]:
 
 def get_inference_pool() -> InferencePool:
 	model_names = get_inference_pool_model_names()
+	if not model_names:
+		return {}
 	_, model_source_set = collect_model_downloads()
 
 	return inference_manager.get_inference_pool(__name__, model_names, model_source_set)
 
 
 def clear_inference_pool() -> None:
-	lip_syncer_model = state_manager.get_item('lip_syncer_model')
+	from facefusion.processors.modules.ditto import core as ditto_core
+	lip_syncer_model = get_effective_lip_syncer_model()
 
 	# Clear both variants so toggling pure_motion cannot reuse a stale pool
 	# that was created without the LivePortrait sessions.
@@ -242,6 +247,7 @@ def clear_inference_pool() -> None:
 	inference_manager.clear_inference_pool(__name__, [ lip_syncer_model, 'live_portrait' ])
 	clear_driver_expression_cache()
 	clear_crop_frame_face_cache()
+	ditto_core.clear_inference_pool()
 
 
 @lru_cache(maxsize = 1)
@@ -253,8 +259,23 @@ def get_static_face_template() -> Tuple[VisionFrame, BoundingBox]:
 
 
 def get_model_options() -> ModelOptions:
-	model_name = state_manager.get_item('lip_syncer_model')
+	model_name = get_effective_lip_syncer_model()
 	return create_static_model_set('full').get(model_name)
+
+
+def get_lip_syncer_pipeline() -> LipSyncerPipeline:
+	pipeline = state_manager.get_item('lip_syncer_pipeline')
+	if pipeline in ( 'live_portrait', 'ditto' ):
+		return pipeline
+	return 'live_portrait'
+
+
+def is_ditto_pipeline() -> bool:
+	return get_lip_syncer_pipeline() == 'ditto'
+
+
+def get_effective_lip_syncer_model() -> str:
+	return 'edtalk_256'
 
 
 def get_face_template_options() -> ModelOptions:
@@ -264,8 +285,9 @@ def get_face_template_options() -> ModelOptions:
 def register_args(program : ArgumentParser) -> None:
 	group_processors = find_argument_group(program, 'processors')
 	if group_processors:
-		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'wav2lip_gan_96'), choices = lip_syncer_choices.lip_syncer_models)
-		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
+		group_processors.add_argument('--lip-syncer-pipeline', help = translator.get('help.pipeline', __package__), default = config.get_str_value('processors', 'lip_syncer_pipeline', 'live_portrait'), choices = lip_syncer_choices.lip_syncer_pipelines)
+		group_processors.add_argument('--lip-syncer-model', help = translator.get('help.model', __package__), default = config.get_str_value('processors', 'lip_syncer_model', 'edtalk_256'), choices = lip_syncer_choices.lip_syncer_models)
+		group_processors.add_argument('--lip-syncer-pure-motion', help = translator.get('help.pure_motion', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_pure_motion', '1.0'), choices = lip_syncer_choices.lip_syncer_pure_motion_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_pure_motion_range))
 		group_processors.add_argument('--lip-syncer-motion-damping', help = translator.get('help.motion_damping', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_motion_damping', '0.0'), choices = lip_syncer_choices.lip_syncer_motion_damping_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_motion_damping_range))
 		group_processors.add_argument('--lip-syncer-crop-stabilization', help = translator.get('help.crop_stabilization', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_crop_stabilization', '0.0'), choices = lip_syncer_choices.lip_syncer_crop_stabilization_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_crop_stabilization_range))
 		group_processors.add_argument('--lip-syncer-motion-smoothing', help = translator.get('help.motion_smoothing', __package__), action = 'store_true', default = config.get_bool_value('processors', 'lip_syncer_motion_smoothing', 'False'))
@@ -278,11 +300,15 @@ def register_args(program : ArgumentParser) -> None:
 		group_processors.add_argument('--lip-syncer-occlusion-blur', help = translator.get('help.occlusion_blur', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_occlusion_blur', '0.0'), choices = lip_syncer_choices.lip_syncer_occlusion_blur_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_occlusion_blur_range))
 		group_processors.add_argument('--lip-syncer-expressiveness', help = translator.get('help.expressiveness', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_expressiveness', '1.0'), choices = lip_syncer_choices.lip_syncer_expressiveness_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_expressiveness_range))
 		group_processors.add_argument('--lip-syncer-weight', help = translator.get('help.weight', __package__), type = float, default = config.get_float_value('processors', 'lip_syncer_weight', '0.5'), choices = lip_syncer_choices.lip_syncer_weight_range, metavar = create_float_metavar(lip_syncer_choices.lip_syncer_weight_range))
-		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_damping', 'lip_syncer_crop_stabilization', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
+		facefusion.jobs.job_store.register_step_keys([ 'lip_syncer_pipeline', 'lip_syncer_model', 'lip_syncer_pure_motion', 'lip_syncer_motion_damping', 'lip_syncer_crop_stabilization', 'lip_syncer_motion_smoothing', 'lip_syncer_motion_mask_mode', 'lip_syncer_mask_blur', 'lip_syncer_mask_erode', 'lip_syncer_mask_expand', 'lip_syncer_chin_expand', 'lip_syncer_occlusion_dilate', 'lip_syncer_occlusion_blur', 'lip_syncer_expressiveness', 'lip_syncer_weight' ])
 
 
 def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
-	apply_state_item('lip_syncer_model', args.get('lip_syncer_model'))
+	pipeline = args.get('lip_syncer_pipeline')
+	if pipeline is None and 'ditto' in (args.get('processors') or []):
+		pipeline = 'ditto'
+	apply_state_item('lip_syncer_pipeline', pipeline or 'live_portrait')
+	apply_state_item('lip_syncer_model', 'edtalk_256')
 	apply_state_item('lip_syncer_pure_motion', args.get('lip_syncer_pure_motion'))
 	apply_state_item('lip_syncer_motion_damping', args.get('lip_syncer_motion_damping'))
 	apply_state_item('lip_syncer_crop_stabilization', args.get('lip_syncer_crop_stabilization'))
@@ -299,6 +325,9 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 
 
 def pre_check() -> bool:
+	if is_ditto_pipeline():
+		from facefusion.processors.modules.ditto import core as ditto_core
+		return ditto_core.pre_check()
 	model_hash_set, model_source_set = collect_model_downloads()
 	face_template_hash_set = get_face_template_options().get('hashes')
 	face_template_source_set = get_face_template_options().get('sources')
@@ -307,6 +336,9 @@ def pre_check() -> bool:
 
 
 def pre_process(mode : ProcessMode) -> bool:
+	if is_ditto_pipeline():
+		from facefusion.processors.modules.ditto import core as ditto_core
+		return ditto_core.pre_process(mode)
 	if not has_audio(state_manager.get_item('source_paths')):
 		logger.error(translator.get('choose_audio_source') + translator.get('exclamation_mark'), __name__)
 		return False
@@ -314,6 +346,9 @@ def pre_process(mode : ProcessMode) -> bool:
 
 
 def post_process() -> None:
+	if is_ditto_pipeline():
+		from facefusion.processors.modules.ditto import core as ditto_core
+		ditto_core.post_process()
 	read_static_image.cache_clear()
 	read_static_video_frame.cache_clear()
 	read_static_voice.cache_clear()
@@ -333,6 +368,8 @@ def post_process() -> None:
 
 
 def has_pure_motion() -> bool:
+	if get_lip_syncer_pipeline() != 'live_portrait':
+		return False
 	pure_motion = state_manager.get_item('lip_syncer_pure_motion')
 	return pure_motion is not None and pure_motion > 0
 
@@ -342,13 +379,13 @@ def has_motion_smoothing() -> bool:
 
 
 def get_crop_stabilization_amount() -> float:
-	if not has_pure_motion():
+	if get_lip_syncer_pipeline() not in ( 'live_portrait', 'ditto' ):
 		return 0.0
 	return max(0.0, min(1.0, state_manager.get_item('lip_syncer_crop_stabilization') or 0.0))
 
 
 def get_motion_mask_mode() -> LipSyncerMotionMaskMode:
-	if not has_pure_motion():
+	if get_lip_syncer_pipeline() not in ( 'live_portrait', 'ditto' ):
 		return 'off'
 	mode = state_manager.get_item('lip_syncer_motion_mask_mode')
 	if mode in ('off', 'box', 'hybrid'):
@@ -982,6 +1019,9 @@ def normalize_refine_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
 
 
 def process_frame(inputs : LipSyncerInputs) -> ProcessorOutputs:
+	if is_ditto_pipeline():
+		from facefusion.processors.modules.ditto import core as ditto_core
+		return ditto_core.process_frame(inputs)
 	reference_vision_frame = inputs.get('reference_vision_frame')
 	source_voice_frame = inputs.get('source_voice_frame')
 	target_vision_frame = inputs.get('target_vision_frame')

@@ -135,6 +135,10 @@ class DittoRunner:
 	def prepare(self, img_rgb_list : List[NDArray], audio_16k : NDArray,
 				source_frame_numbers : Optional[List[int]] = None,
 				source_total_frames : Optional[int] = None,
+				crop_frames : Optional[List[Optional[NDArray]]] = None,
+				affine_matrices : Optional[List[Optional[NDArray]]] = None,
+				bbox_hints : Optional[List[Optional[NDArray]]] = None,
+				landmark_hints : Optional[List[Optional[NDArray]]] = None,
 				sampling_timesteps : int = 50, emo : int = 4) -> int:
 		"""Load models and pre-compute all motion from source + audio.
 
@@ -152,6 +156,10 @@ class DittoRunner:
 			img_rgb_list, audio_16k,
 			source_frame_numbers=source_frame_numbers,
 			source_total_frames=source_total_frames,
+			crop_frames=crop_frames,
+			affine_matrices=affine_matrices,
+			bbox_hints=bbox_hints,
+			landmark_hints=landmark_hints,
 			sampling_timesteps=sampling_timesteps, emo=emo,
 		)
 		self._prepared = True
@@ -170,6 +178,24 @@ class DittoRunner:
 		return self._pipeline.render_frame(
 			frame_number,
 			current_frame_rgb=current_frame_rgb,
+			current_bbox=current_bbox,
+			current_landmarks=current_landmarks
+		)
+
+	def process_frame_data(self, frame_number : int = 0,
+						current_frame_rgb : Optional[NDArray] = None,
+						current_crop_rgb : Optional[NDArray] = None,
+						current_affine_matrix : Optional[NDArray] = None,
+						current_bbox : Optional[NDArray] = None,
+						current_landmarks : Optional[NDArray] = None) -> Optional[Dict[str, NDArray]]:
+		"""Render a single frame and return crop-space data."""
+		if not self._prepared or self._pipeline is None:
+			return None
+		return self._pipeline.render_frame_data(
+			frame_number,
+			current_frame_rgb=current_frame_rgb,
+			current_crop_rgb=current_crop_rgb,
+			current_affine_matrix=current_affine_matrix,
 			current_bbox=current_bbox,
 			current_landmarks=current_landmarks
 		)

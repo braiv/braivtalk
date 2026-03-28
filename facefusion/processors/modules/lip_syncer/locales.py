@@ -6,6 +6,7 @@ LOCALES : Locales =\
 	{
 		'help':
 		{
+			'pipeline': 'choose the lip-sync pipeline (live_portrait uses edtalk + live-portrait, ditto uses the ditto inference backend)',
 			'model': 'choose the model responsible for syncing the lips',
 			'pure_motion': 'refine with live-portrait',
 			'motion_damping': 'reduce the stitcher correction strength to calm jittery live-portrait motion',
@@ -23,6 +24,7 @@ LOCALES : Locales =\
 		},
 		'uis':
 		{
+			'pipeline_dropdown': 'LIP SYNCER PIPELINE',
 			'model_dropdown': 'LIP SYNCER MODEL',
 			'pure_motion_slider': 'LIP SYNCER PURE MOTION',
 			'motion_damping_slider': 'LIP SYNCER MOTION DAMPING',

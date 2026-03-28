@@ -72,6 +72,7 @@ SAVEABLE_CONFIG_OPTIONS : Dict[str, List[str]] =\
 		'face_enhancer_model',
 		'face_enhancer_blend',
 		'face_enhancer_weight',
+		'lip_syncer_pipeline',
 		'lip_syncer_model',
 		'lip_syncer_pure_motion',
 		'lip_syncer_motion_damping',
@@ -88,7 +89,10 @@ SAVEABLE_CONFIG_OPTIONS : Dict[str, List[str]] =\
 		'lip_syncer_weight',
 		'ditto_source_mode',
 		'ditto_backend',
-		'ditto_render_mode'
+		'ditto_render_mode',
+		'ditto_registration_crop_mode',
+		'ditto_live_crop_mode',
+		'ditto_composite_geometry_mode'
 	],
 	'uis':
 	[
